@@ -1,0 +1,8 @@
+# Vocabulary hints improve recognition and are also shown to the cleanup model.
+FlowType
+Arkis
+whisper.cpp
+
+# Replacements run after cleanup and are case-insensitive whole-phrase matches.
+whisper flow => Wispr Flow
+super whisper => Superwhisper

@@ -1,0 +1,49 @@
+{
+  "audio" : {
+    "duckingLevel" : "mid",
+    "feedbackSoundsEnabled" : true,
+    "inputDeviceName" : "",
+    "inputDeviceUID" : "system_default",
+    "voiceProcessingEnabled" : false
+  },
+  "cleanup" : {
+    "baseURL" : "https://api.openai.com/v1",
+    "enabled" : true,
+    "fallbackToRawOnError" : true,
+    "model" : "gpt-5-mini",
+    "prompt" : "Remove filler words, fix punctuation, and preserve the speaker's meaning. Match capitalization to the apparent dictation style. Keep names, technical terms, numbers, and formatting intact. Return only the cleaned text.",
+    "provider" : "openai"
+  },
+  "clipboard" : {
+    "restoreDelayMilliseconds" : 500,
+    "restorePrevious" : false
+  },
+  "dictionaryPath" : "~/Library/Application Support/FlowType/dictionary.txt",
+  "enabled" : true,
+  "gestures" : {
+    "doubleTapIntervalMilliseconds" : 320,
+    "hybridPrimaryHotkey" : true,
+    "maxRecordingSeconds" : 300,
+    "quickTapMaxDurationMilliseconds" : 240
+  },
+  "hotkey" : {
+    "key" : "right_option",
+    "modifiers" : [
+
+    ]
+  },
+  "toggleHotkey" : {
+    "key" : "fn",
+    "modifiers" : [
+
+    ]
+  },
+  "transcription" : {
+    "groqModel" : "whisper-large-v3-turbo",
+    "language" : "en",
+    "localExecutable" : "/opt/homebrew/bin/whisper-cli",
+    "localModelPath" : "~/Library/Application Support/FlowType/models/ggml-small.en.bin",
+    "openAIModel" : "whisper-1",
+    "provider" : "local"
+  }
+}
