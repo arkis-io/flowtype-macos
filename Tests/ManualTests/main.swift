@@ -11,6 +11,35 @@ private func expect<T: Equatable>(_ actual: T, _ expected: T, _ name: String) {
     }
 }
 
+private final class FakeOutputVolumeController: OutputVolumeControlling {
+    let control = OutputVolumeControl(
+        deviceUID: "test-output",
+        deviceName: "Test Speakers",
+        element: 0
+    )
+    var currentVolume: Float32
+    var isAvailable = true
+    var allowsChanges = true
+
+    init(volume: Float32) {
+        currentVolume = volume
+    }
+
+    func defaultOutputControl() -> OutputVolumeControl? {
+        isAvailable ? control : nil
+    }
+
+    func volume(for control: OutputVolumeControl) -> Float32? {
+        isAvailable && control == self.control ? currentVolume : nil
+    }
+
+    func setVolume(_ volume: Float32, for control: OutputVolumeControl) -> Bool {
+        guard isAvailable, allowsChanges, control == self.control else { return false }
+        currentVolume = volume
+        return true
+    }
+}
+
 let config = AppConfig.defaultConfig.gestures
 var legacyConfig = config
 legacyConfig.hybridPrimaryHotkey = false
@@ -30,6 +59,50 @@ expect(
     false,
     "quiet but usable audio is accepted"
 )
+
+do {
+    let testDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FlowTypeVolumeTest-\(UUID().uuidString)", isDirectory: true)
+    let recoveryURL = testDirectory.appendingPathComponent("recovery.json")
+    defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+    let backend = FakeOutputVolumeController(volume: 0.8)
+    let ducker = OutputVolumeDucker(recoveryURL: recoveryURL, backend: backend)
+    expect(ducker.begin(enabled: true, level: "mid"), true, "music lowering starts on a supported output")
+    expect(Int((backend.currentVolume * 1_000).rounded()), 280, "medium lowering keeps 35 percent of the prior volume")
+    expect(FileManager.default.fileExists(atPath: recoveryURL.path), true, "original volume is persisted before lowering")
+    expect(ducker.restoreIfNeeded(), true, "music volume restores after recording")
+    expect(Int((backend.currentVolume * 1_000).rounded()), 800, "restoration returns the exact previous volume")
+    expect(FileManager.default.fileExists(atPath: recoveryURL.path), false, "successful restoration clears recovery state")
+}
+
+do {
+    let testDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FlowTypeCrashRecoveryTest-\(UUID().uuidString)", isDirectory: true)
+    let recoveryURL = testDirectory.appendingPathComponent("recovery.json")
+    defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+    let backend = FakeOutputVolumeController(volume: 0.6)
+    let firstProcess = OutputVolumeDucker(recoveryURL: recoveryURL, backend: backend)
+    expect(firstProcess.begin(enabled: true, level: "max"), true, "strong lowering starts before simulated crash")
+
+    let relaunchedProcess = OutputVolumeDucker(recoveryURL: recoveryURL, backend: backend)
+    expect(relaunchedProcess.restoreIfNeeded(), true, "next launch restores volume after a simulated crash")
+    expect(Int((backend.currentVolume * 1_000).rounded()), 600, "crash recovery restores the pre-recording volume")
+}
+
+do {
+    let testDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FlowTypeUnsupportedOutputTest-\(UUID().uuidString)", isDirectory: true)
+    let recoveryURL = testDirectory.appendingPathComponent("recovery.json")
+    defer { try? FileManager.default.removeItem(at: testDirectory) }
+
+    let backend = FakeOutputVolumeController(volume: 0.9)
+    backend.isAvailable = false
+    let ducker = OutputVolumeDucker(recoveryURL: recoveryURL, backend: backend)
+    expect(ducker.begin(enabled: true, level: "mid"), false, "unsupported output safely skips music lowering")
+    expect(Int((backend.currentVolume * 1_000).rounded()), 900, "unsupported output does not alter volume")
+}
 
 do {
     var machine = GestureStateMachine()

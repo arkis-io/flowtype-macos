@@ -5,6 +5,7 @@ final class ConfigStore {
     let configURL: URL
     let defaultDictionaryURL: URL
     let environmentURL: URL
+    let outputVolumeRecoveryURL: URL
 
     init(fileManager: FileManager = .default) throws {
         let base = try fileManager.url(
@@ -20,6 +21,7 @@ final class ConfigStore {
         configURL = base.appendingPathComponent("config.json")
         defaultDictionaryURL = base.appendingPathComponent("dictionary.txt")
         environmentURL = base.appendingPathComponent(".env")
+        outputVolumeRecoveryURL = base.appendingPathComponent("output-volume-recovery.json")
 
         try createDefaultsIfNeeded(fileManager: fileManager)
     }

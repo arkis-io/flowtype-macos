@@ -52,6 +52,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         target: nil,
         action: nil
     )
+    private let lowerOtherAudioCheckbox = NSButton(
+        checkboxWithTitle: "Lower music and other audio while recording",
+        target: nil,
+        action: nil
+    )
     private let duckingPopup = NSPopUpButton()
 
     private let transcriptionProviderPopup = NSPopUpButton()
@@ -199,11 +204,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         microphonePopup.action = #selector(audioControlsChanged)
         voiceProcessingCheckbox.target = self
         voiceProcessingCheckbox.action = #selector(audioControlsChanged)
+        lowerOtherAudioCheckbox.target = self
+        lowerOtherAudioCheckbox.action = #selector(audioControlsChanged)
         for (title, value) in [
-            ("Light", "min"),
-            ("Medium", "mid"),
-            ("Strong", "max"),
-            ("System default", "default")
+            ("Light — keep 65%", "min"),
+            ("Medium — keep 35%", "mid"),
+            ("Strong — keep 15%", "max")
         ] {
             duckingPopup.addItem(withTitle: title)
             duckingPopup.lastItem?.representedObject = value
@@ -350,9 +356,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             microphoneStatusLabel,
             feedbackSoundsCheckbox,
             voiceProcessingCheckbox,
-            row(label: "Lower other audio", control: duckingPopup),
+            lowerOtherAudioCheckbox,
+            row(label: "Lowering strength", control: duckingPopup),
             Self.helpLabel(
-                "Normal capture is the reliable default. Voice processing uses Apple's voice isolation and automatic gain; FlowType falls back automatically if macOS exposes an unsafe multichannel stream."
+                "Music lowering is independent from the microphone and restores the exact previous output volume after stop, Escape, or quit. Unsupported HDMI or USB outputs are skipped safely."
             ),
             divider(),
             sectionTitle("Safety and clipboard"),
@@ -723,7 +730,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         populateMicrophonePopup()
         feedbackSoundsCheckbox.state = draft.audio.feedbackSoundsEnabled ? .on : .off
         voiceProcessingCheckbox.state = draft.audio.voiceProcessingEnabled ? .on : .off
-        select(value: draft.audio.duckingLevel.lowercased(), in: duckingPopup)
+        lowerOtherAudioCheckbox.state = draft.audio.lowerOtherAudioEnabled ? .on : .off
+        let savedDuckingLevel = draft.audio.duckingLevel.lowercased()
+        select(value: savedDuckingLevel == "default" ? "mid" : savedDuckingLevel, in: duckingPopup)
 
         activeTranscriptionProvider = draft.transcription.provider.lowercased()
         select(value: activeTranscriptionProvider, in: transcriptionProviderPopup)
@@ -761,6 +770,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.clipboard.restorePrevious = restoreClipboardCheckbox.state == .on
         draft.audio.feedbackSoundsEnabled = feedbackSoundsCheckbox.state == .on
         draft.audio.voiceProcessingEnabled = voiceProcessingCheckbox.state == .on
+        draft.audio.lowerOtherAudioEnabled = lowerOtherAudioCheckbox.state == .on
         draft.audio.duckingLevel = selectedValue(in: duckingPopup) ?? "mid"
         draft.audio.inputDeviceUID = selectedValue(in: microphonePopup) ?? AudioDeviceService.systemDefaultUID
         draft.audio.inputDeviceName = draft.audio.inputDeviceUID == AudioDeviceService.systemDefaultUID
@@ -813,7 +823,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func updateAudioControls() {
-        duckingPopup.isEnabled = voiceProcessingCheckbox.state == .on
+        duckingPopup.isEnabled = lowerOtherAudioCheckbox.state == .on
         updateMicrophoneStatus()
     }
 

@@ -10,6 +10,7 @@ final class AppCoordinator {
     private let eventMonitor: GlobalEventMonitor
     private let audioRecorder = AudioRecorder()
     private let audioFeedback = AudioFeedbackService()
+    private let outputVolumeDucker: OutputVolumeDucker
     private let audioConverter = AudioConverterService()
     private let transcriptionService = TranscriptionService()
     private let cleanupService = CleanupService()
@@ -24,6 +25,7 @@ final class AppCoordinator {
 
     init(configStore: ConfigStore) throws {
         self.configStore = configStore
+        outputVolumeDucker = OutputVolumeDucker(recoveryURL: configStore.outputVolumeRecoveryURL)
         config = try configStore.load()
         try SettingsValidator.validate(config)
         eventMonitor = try GlobalEventMonitor(config: config.hotkey, toggleConfig: config.toggleHotkey)
@@ -43,8 +45,13 @@ final class AppCoordinator {
     }
 
     func start() {
+        _ = outputVolumeDucker.restoreIfNeeded()
         installEventMonitor()
         onEnabledChange?(config.enabled)
+    }
+
+    func shutdown() {
+        cancelCurrentWork()
     }
 
     func reloadConfiguration() {
@@ -152,6 +159,10 @@ final class AppCoordinator {
                 do {
                     try audioRecorder.start(config: config.audio)
                     audioFeedback.playStarted(ifEnabled: config.audio.feedbackSoundsEnabled)
+                    _ = outputVolumeDucker.begin(
+                        enabled: config.audio.lowerOtherAudioEnabled,
+                        level: config.audio.duckingLevel
+                    )
                     scheduleAutoStop()
                     onStatusChange?("Recording")
                 } catch {
@@ -211,8 +222,10 @@ final class AppCoordinator {
         let sourceURL: URL
         do {
             sourceURL = try audioRecorder.stop()
+            _ = outputVolumeDucker.restoreIfNeeded()
             audioFeedback.playStopped(ifEnabled: config.audio.feedbackSoundsEnabled)
         } catch {
+            _ = outputVolumeDucker.restoreIfNeeded()
             stateMachine.reset()
             showError(error.localizedDescription)
             return
@@ -291,6 +304,7 @@ final class AppCoordinator {
         cancelTimers()
         let wasRecording = audioRecorder.isRecording
         audioRecorder.cancel()
+        _ = outputVolumeDucker.restoreIfNeeded()
         if wasRecording {
             audioFeedback.playStopped(ifEnabled: config.audio.feedbackSoundsEnabled)
         }

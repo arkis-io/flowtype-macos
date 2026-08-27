@@ -4,6 +4,7 @@
     "feedbackSoundsEnabled" : true,
     "inputDeviceName" : "",
     "inputDeviceUID" : "system_default",
+    "lowerOtherAudioEnabled" : true,
     "voiceProcessingEnabled" : false
   },
   "cleanup" : {

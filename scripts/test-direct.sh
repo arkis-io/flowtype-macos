@@ -13,11 +13,13 @@ mkdir -p "$PROJECT_DIR/.build/direct"
     -target "$ARCHITECTURE-apple-macos13.0" \
     "$PROJECT_DIR/Sources/FlowType/Models.swift" \
     "$PROJECT_DIR/Sources/FlowType/AudioSignalQuality.swift" \
+    "$PROJECT_DIR/Sources/FlowType/OutputVolumeDucker.swift" \
     "$PROJECT_DIR/Sources/FlowType/GestureStateMachine.swift" \
     "$PROJECT_DIR/Sources/FlowType/PersonalDictionary.swift" \
     "$PROJECT_DIR/Sources/FlowType/PermissionSetupStep.swift" \
     "$PROJECT_DIR/Sources/FlowType/SettingsValidation.swift" \
     "$PROJECT_DIR/Tests/ManualTests/main.swift" \
-    -o "$TEST_BINARY"
+    -o "$TEST_BINARY" \
+    -framework CoreAudio
 
 "$TEST_BINARY"

@@ -24,6 +24,7 @@ struct AppConfig: Codable, Equatable {
         audio: AudioConfig(
             feedbackSoundsEnabled: true,
             voiceProcessingEnabled: false,
+            lowerOtherAudioEnabled: true,
             duckingLevel: "mid",
             inputDeviceUID: "system_default",
             inputDeviceName: ""
@@ -75,6 +76,7 @@ struct GestureConfig: Codable, Equatable {
 struct AudioConfig: Codable, Equatable {
     var feedbackSoundsEnabled: Bool
     var voiceProcessingEnabled: Bool
+    var lowerOtherAudioEnabled: Bool
     var duckingLevel: String
     var inputDeviceUID: String
     var inputDeviceName: String

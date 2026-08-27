@@ -11,7 +11,8 @@ It is a native Swift/AppKit menu-bar app with no account system, analytics, tele
 - Legacy two-shortcut mode also supports double-tapping push to talk to keep the same recording hands-free.
 - Play distinct start and stop sounds so recording state is audible as well as visible.
 - Follow the current macOS input automatically, or choose a specific connected microphone such as AirPods.
-- Optionally use Apple's experimental voice processing for automatic gain, voice clarity, and music ducking, with safe fallback to normal capture.
+- Lower music and other output independently while recording, then restore the exact previous volume after stop, cancellation, quit, or crash recovery.
+- Optionally use Apple's experimental voice processing for automatic gain and voice clarity, with safe fallback to normal capture.
 - Hands-free and held recordings stop automatically after five minutes.
 - `Esc` cancels a recording or an in-flight local/API transcription. FlowType observes Escape with a listen-only event tap, so Escape still reaches the frontmost app.
 - Local transcription through `whisper.cpp`, or hosted transcription through OpenAI or Groq.
@@ -19,7 +20,7 @@ It is a native Swift/AppKit menu-bar app with no account system, analytics, tele
 - A personal dictionary provides recognition hints and deterministic spelling replacements.
 - The transcript remains on the clipboard by default. A config flag can restore the previous clipboard after pasting.
 - A non-activating floating pill shows held, hands-free, processing, and error states without stealing keyboard focus.
-- A native Settings window edits shortcut behavior, audio feedback, voice processing, the five-minute safety limit, clipboard behavior, providers, model paths, and personal dictionary.
+- A native Settings window edits shortcut behavior, audio feedback, music lowering, voice processing, the five-minute safety limit, clipboard behavior, providers, model paths, and personal dictionary.
 - Menu-bar controls for settings, on/off, configuration files, permissions, launch at login, and quit.
 
 ## Mental model
@@ -174,9 +175,11 @@ The General tab lists the input devices currently exposed by macOS and includes 
 
 - **Start/stop sounds** play short macOS sounds when the microphone starts and stops.
 - **Voice clarity** optionally enables Apple's voice processing and automatic gain control, which raises quieter speech and reduces non-speech interference. Normal microphone capture is the reliable default.
-- **Lower other audio** controls how strongly macOS ducks music and audio from other apps while FlowType is listening. Medium is the default.
+- **Lower other audio** is independent from microphone processing. FlowType remembers the current output device and its exact volume, then applies a relative level while listening: Light keeps 65%, Medium keeps 35%, and Strong keeps 15%.
 
-Voice processing is available on macOS 13 and later. Configurable ducking is available on macOS 14 and later. If the selected microphone or virtual audio device rejects voice processing or exposes an unsafe multichannel stream, FlowType automatically retries with ordinary recording rather than risking a silent dictation. FlowType does not alter the Mac's master volume, so there is no volume value to restore after recording.
+FlowType restores the previous output volume after normal stop, `Esc`, disabling dictation, opening Settings, or quitting. Before lowering anything it writes a small recovery record under Application Support; the next launch restores that volume if the prior process crashed. Outputs without a writable macOS volume control, such as some HDMI and USB devices, are skipped without interrupting dictation. If the output device changes mid-recording, FlowType restores the original device by its stable Core Audio UID when that device is available.
+
+Voice processing is available on macOS 13 and later. If the selected microphone or virtual audio device rejects it or exposes an unsafe multichannel stream, FlowType automatically retries with ordinary recording rather than risking a silent dictation.
 
 The floating recording pill shows the microphone FlowType actually opened. AirPods only appear when they are connected and macOS exposes them as an input device; use **Refresh** in Settings after connecting or disconnecting audio hardware.
 
@@ -319,6 +322,7 @@ This first version intentionally does not copy their account systems, transcript
 - Temporary audio lives in the macOS temporary directory and is deleted after success, failure, or cancellation.
 - Local transcription never sends audio off-device.
 - Dictionary and configuration files remain in the user's Application Support directory. Vocabulary terms are included in recognition/cleanup prompts, so those terms are sent to the selected provider when a cloud stage is enabled.
+- During active music lowering, a small local recovery file stores the output device identifier and prior volume. It is deleted after successful restoration.
 - LLM cleanup sends transcript text only when a cloud cleanup endpoint is enabled.
 - OpenAI/Groq transcription sends the audio to the selected provider; their API data terms apply.
 

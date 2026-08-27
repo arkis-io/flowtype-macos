@@ -49,7 +49,6 @@ final class AudioRecorder {
                     setup = try makeEngine(
                         sourceURL: sourceURL,
                         useVoiceProcessing: attempt.voiceProcessing,
-                        duckingLevel: config.duckingLevel,
                         deviceID: attempt.deviceID
                     )
                     break
@@ -114,22 +113,9 @@ final class AudioRecorder {
         recordingDirectory = nil
     }
 
-    @available(macOS 14.0, *)
-    private static func duckingLevel(
-        from value: String
-    ) -> AVAudioVoiceProcessingOtherAudioDuckingConfiguration.Level {
-        switch value.lowercased() {
-        case "min": return .min
-        case "mid": return .mid
-        case "max": return .max
-        default: return .default
-        }
-    }
-
     private func makeEngine(
         sourceURL: URL,
         useVoiceProcessing: Bool,
-        duckingLevel: String,
         deviceID: AudioDeviceID?
     ) throws -> (engine: AVAudioEngine, file: AVAudioFile, voiceProcessing: Bool, deviceID: AudioDeviceID?) {
         let engine = AVAudioEngine()
@@ -138,13 +124,6 @@ final class AudioRecorder {
         if useVoiceProcessing {
             try input.setVoiceProcessingEnabled(true)
             input.isVoiceProcessingAGCEnabled = true
-            if #available(macOS 14.0, *) {
-                input.voiceProcessingOtherAudioDuckingConfiguration =
-                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
-                        enableAdvancedDucking: false,
-                        duckingLevel: Self.duckingLevel(from: duckingLevel)
-                    )
-            }
         }
 
         if var deviceID {

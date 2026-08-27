@@ -61,6 +61,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        coordinator?.shutdown()
+    }
+
     private func configureStatusItem() {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.statusItem = statusItem
