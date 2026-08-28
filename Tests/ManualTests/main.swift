@@ -50,6 +50,16 @@ expect(
     "normal microphone capture is the reliable default"
 )
 expect(
+    AppConfig.defaultConfig.updates.checkAutomatically,
+    true,
+    "public release checks are enabled by default"
+)
+expect(
+    AppConfig.defaultConfig.transcription.localExecutable,
+    "bundled",
+    "new installs use FlowType's bundled offline engine"
+)
+expect(
     AudioSignalQuality.isNearSilent(peakAmplitude: 0.00003),
     true,
     "near-digital silence is rejected before transcription"
@@ -59,6 +69,135 @@ expect(
     false,
     "quiet but usable audio is accepted"
 )
+
+do {
+    expect(
+        LocalModelSpecification.smallEnglish.expectedByteCount,
+        487_614_201,
+        "offline model size is pinned"
+    )
+    expect(
+        LocalModelSpecification.smallEnglish.expectedSHA256,
+        "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+        "offline model checksum is pinned"
+    )
+
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("FlowTypeModelVerifier-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let sourceURL = directory.appendingPathComponent("fixture.bin")
+    try? Data("abc".utf8).write(to: sourceURL)
+    let fixture = LocalModelSpecification(
+        filename: "fixture.bin",
+        downloadURL: URL(string: "https://example.com/fixture.bin")!,
+        expectedByteCount: 3,
+        expectedSHA256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    )
+
+    var validFixturePassed = false
+    do {
+        try LocalModelFileVerifier.verify(sourceURL, specification: fixture)
+        validFixturePassed = true
+    } catch {}
+    expect(validFixturePassed, true, "a model with the pinned size and checksum is accepted")
+
+    let wrongChecksum = LocalModelSpecification(
+        filename: fixture.filename,
+        downloadURL: fixture.downloadURL,
+        expectedByteCount: fixture.expectedByteCount,
+        expectedSHA256: String(repeating: "0", count: 64)
+    )
+    var corruptFixtureRejected = false
+    do {
+        try LocalModelFileVerifier.verify(sourceURL, specification: wrongChecksum)
+    } catch {
+        corruptFixtureRejected = true
+    }
+    expect(corruptFixtureRejected, true, "a model with the wrong checksum is rejected")
+
+    let existingURL = directory.appendingPathComponent("installed.bin")
+    let badStagingURL = directory.appendingPathComponent("bad-download.bin")
+    try? Data("old".utf8).write(to: existingURL)
+    try? Data("bad".utf8).write(to: badStagingURL)
+    do {
+        try LocalModelFileVerifier.installVerifiedFile(
+            stagingURL: badStagingURL,
+            destinationURL: existingURL,
+            specification: fixture
+        )
+    } catch {}
+    expect(
+        try? String(contentsOf: existingURL, encoding: .utf8),
+        "old",
+        "a corrupt or interrupted download cannot replace a working model"
+    )
+
+    let goodStagingURL = directory.appendingPathComponent("good-download.bin")
+    try? Data("abc".utf8).write(to: goodStagingURL)
+    var verifiedReplacementPassed = false
+    do {
+        try LocalModelFileVerifier.installVerifiedFile(
+            stagingURL: goodStagingURL,
+            destinationURL: existingURL,
+            specification: fixture
+        )
+        verifiedReplacementPassed = (try? String(contentsOf: existingURL, encoding: .utf8)) == "abc"
+    } catch {}
+    expect(verifiedReplacementPassed, true, "a verified model atomically replaces the previous file")
+}
+
+do {
+    expect(ReleaseVersion("v0.6.0"), ReleaseVersion("0.6"), "release versions ignore a leading v and trailing zero")
+    expect(
+        ReleaseVersion("0.10.0")! > ReleaseVersion("0.9.9")!,
+        true,
+        "release versions compare numerically"
+    )
+    expect(ReleaseVersion("version-six"), nil, "invalid release versions are rejected")
+
+    let availableJSON = Data("""
+    {
+      "tag_name": "v0.7.0",
+      "name": "FlowType 0.7.0",
+      "body": "A safer update.",
+      "html_url": "https://github.com/jdlinventures/flowtype-macos/releases/tag/v0.7.0"
+    }
+    """.utf8)
+    let release = FlowTypeRelease(
+        version: "0.7.0",
+        title: "FlowType 0.7.0",
+        notes: "A safer update.",
+        webpageURL: URL(string: "https://github.com/jdlinventures/flowtype-macos/releases/tag/v0.7.0")!
+    )
+    expect(
+        try? ReleaseUpdateChecker.outcome(from: availableJSON, currentVersion: ReleaseVersion("0.6.0")!),
+        .updateAvailable(release),
+        "newer GitHub releases are offered"
+    )
+    expect(
+        try? ReleaseUpdateChecker.outcome(from: availableJSON, currentVersion: ReleaseVersion("0.7.0")!),
+        .upToDate(release),
+        "the installed GitHub release reports up to date"
+    )
+    expect(
+        ReleaseUpdateChecker.shouldCheckAutomatically(
+            lastCheck: Date(timeIntervalSince1970: 100),
+            now: Date(timeIntervalSince1970: 100 + 23 * 60 * 60)
+        ),
+        false,
+        "automatic release checks wait 24 hours"
+    )
+    expect(
+        ReleaseUpdateChecker.shouldCheckAutomatically(
+            lastCheck: Date(timeIntervalSince1970: 100),
+            now: Date(timeIntervalSince1970: 100 + 24 * 60 * 60)
+        ),
+        true,
+        "automatic release checks resume after 24 hours"
+    )
+}
 
 do {
     let testDirectory = FileManager.default.temporaryDirectory

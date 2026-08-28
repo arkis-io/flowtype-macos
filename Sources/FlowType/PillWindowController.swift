@@ -7,6 +7,7 @@ final class PillWindowController {
         case handsFree
         case processing
         case error
+        case update
 
         var color: NSColor {
             switch self {
@@ -14,6 +15,7 @@ final class PillWindowController {
             case .handsFree: return .systemOrange
             case .processing: return .systemBlue
             case .error: return .systemYellow
+            case .update: return .systemGreen
             }
         }
     }

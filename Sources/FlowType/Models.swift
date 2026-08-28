@@ -9,6 +9,7 @@ struct AppConfig: Codable, Equatable {
     var transcription: TranscriptionConfig
     var cleanup: CleanupConfig
     var clipboard: ClipboardConfig
+    var updates: UpdateConfig
     var dictionaryPath: String
 
     static let defaultConfig = AppConfig(
@@ -32,7 +33,7 @@ struct AppConfig: Codable, Equatable {
         transcription: TranscriptionConfig(
             provider: "local",
             language: "en",
-            localExecutable: "/opt/homebrew/bin/whisper-cli",
+            localExecutable: "bundled",
             localModelPath: "~/Library/Application Support/FlowType/models/ggml-small.en.bin",
             openAIModel: "whisper-1",
             groqModel: "whisper-large-v3-turbo"
@@ -48,6 +49,9 @@ struct AppConfig: Codable, Equatable {
         clipboard: ClipboardConfig(
             restorePrevious: false,
             restoreDelayMilliseconds: 500
+        ),
+        updates: UpdateConfig(
+            checkAutomatically: true
         ),
         dictionaryPath: "~/Library/Application Support/FlowType/dictionary.txt"
     )
@@ -103,6 +107,10 @@ struct CleanupConfig: Codable, Equatable {
 struct ClipboardConfig: Codable, Equatable {
     var restorePrevious: Bool
     var restoreDelayMilliseconds: Int
+}
+
+struct UpdateConfig: Codable, Equatable {
+    var checkAutomatically: Bool
 }
 
 enum FlowTypeError: LocalizedError {

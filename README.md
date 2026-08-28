@@ -1,6 +1,6 @@
 # FlowType
 
-FlowType is a private, system-wide AI dictation app for macOS. Tap its global hotkey for hands-free dictation or hold the same key for push to talk; the finished text is pasted at the cursor in the app you were already using.
+FlowType is a local-first, system-wide AI dictation app for macOS. Tap its global hotkey for hands-free dictation or hold the same key for push to talk; the finished text is pasted at the cursor in the app you were already using.
 
 It is a native Swift/AppKit menu-bar app with no account system, analytics, telemetry, database, or third-party Swift dependencies.
 
@@ -15,13 +15,24 @@ It is a native Swift/AppKit menu-bar app with no account system, analytics, tele
 - Optionally use Apple's experimental voice processing for automatic gain and voice clarity, with safe fallback to normal capture.
 - Hands-free and held recordings stop automatically after five minutes.
 - `Esc` cancels a recording or an in-flight local/API transcription. FlowType observes Escape with a listen-only event tap, so Escape still reaches the frontmost app.
-- Local transcription through `whisper.cpp`, or hosted transcription through OpenAI or Groq.
+- Local transcription through the universal `whisper.cpp` engine included in FlowType, or hosted transcription through OpenAI or Groq.
+- A first-run Model Manager installs, verifies, retries, cancels, reinstalls, or removes the local English model without Homebrew or Terminal.
 - Optional cleanup through an OpenAI-compatible language-model endpoint.
 - A personal dictionary provides recognition hints and deterministic spelling replacements.
 - The transcript remains on the clipboard by default. A config flag can restore the previous clipboard after pasting.
 - A non-activating floating pill shows held, hands-free, processing, and error states without stealing keyboard focus.
 - A native Settings window edits shortcut behavior, audio feedback, music lowering, voice processing, the five-minute safety limit, clipboard behavior, providers, model paths, and personal dictionary.
 - Menu-bar controls for settings, on/off, configuration files, permissions, launch at login, and quit.
+- Optional daily GitHub release checks. FlowType shows a non-activating notice and lets the user choose Download, Later, or Skip; it never installs an update silently.
+
+## Start here
+
+- **Installing for yourself or a friend:** [Detailed installation and troubleshooting guide](docs/INSTALL_FOR_FRIENDS.md)
+- **Handing installation to a coding agent:** use the agent checklist in that same guide; it identifies the steps that still require the Mac owner's clicks.
+- **Understanding the code:** [Architecture and data-flow guide](docs/ARCHITECTURE.md)
+- **Publishing a new version:** [Release runbook](docs/RELEASING.md)
+
+FlowType is currently distributed as an unsigned community build. There is no Apple Developer Program membership behind the project. That keeps the project free, but macOS will show an unidentified-developer warning and may ask for privacy permissions again after an upgrade. The documentation never recommends disabling Gatekeeper globally.
 
 ## Mental model
 
@@ -45,9 +56,15 @@ The state machine is important. It gives late API responses and `Esc` cancellati
 
 ## Install
 
-### 1. Build the app
+### Option A: packaged release
 
-macOS 13 or later is required. Apple Silicon and Intel builds are supported; the build script targets the Mac it runs on.
+After the first public release exists, download the DMG and matching `.sha256` file from the [latest FlowType release](https://github.com/jdlinventures/flowtype-macos/releases/latest). Verify the checksum, open the DMG, and drag FlowType onto the Applications shortcut.
+
+Because the app is not notarized, first launch requires the one-time **Open Anyway** flow under **System Settings → Privacy & Security**. Then select **Install Offline Model** in FlowType Settings. FlowType downloads the pinned ~488 MB English model once, verifies it, and keeps it for future app updates. Follow [INSTALL_FOR_FRIENDS.md](docs/INSTALL_FOR_FRIENDS.md) for the exact safe steps, permission setup, and a real dictation test.
+
+### Option B: build from source
+
+macOS 13 or later is required. Apple Silicon and Intel builds are supported. Building from source requires Apple's command-line developer tools and CMake; these are release-development tools and are not required by people installing the DMG.
 
 ```bash
 ./scripts/test-direct.sh
@@ -62,28 +79,19 @@ open /Applications/FlowType.app
 
 The Settings window opens on the first launch. After that, open it by clicking FlowType in Applications again or choosing **Settings…** from the waveform icon in the menu bar. FlowType is a background utility, so closing Settings leaves dictation running.
 
-The build is ad-hoc signed for local use. It is not notarized for public distribution. A public release should use a Developer ID certificate, hardened runtime, and Apple notarization.
+The build is ad-hoc signed for local use. It is not notarized. Do not disable Gatekeeper system-wide; approve only the FlowType build you obtained from this repository.
 
-### 2. Install whisper.cpp and a model
+### Install the offline model
 
-The default configuration uses local transcription. Homebrew's current formula installs the official `whisper-cli` binary:
+The packaged app already contains its own universal `whisper-cli`; no Homebrew, CMake, or Terminal setup is needed. In FlowType Settings:
 
-```bash
-brew install whisper-cpp
-```
+1. Select **Install Offline Model**.
+2. Leave FlowType open while the ~488 MB download completes.
+3. Wait for **installed and verified** before dictating.
 
-Download the English `small` model (about 466 MB):
+The download is pinned to an immutable model revision. FlowType verifies the exact 487,614,201-byte size and SHA-256 digest before moving it into place. A cancelled, truncated, or corrupted download cannot replace a working model.
 
-```bash
-mkdir -p "$HOME/Library/Application Support/FlowType/models"
-curl --fail --location \
-  --output "$HOME/Library/Application Support/FlowType/models/ggml-small.en.bin" \
-  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"
-```
-
-For higher accuracy at the cost of more memory and latency, download `ggml-medium.en.bin` from the same official model repository and update `transcription.localModelPath` in `config.json`.
-
-The app checks the configured executable path first, then the standard Apple Silicon and Intel Homebrew locations.
+The model is stored at `~/Library/Application Support/FlowType/models/ggml-small.en.bin`, outside the app bundle. Replacing FlowType during an update therefore preserves the model and keeps later app downloads under 10 MB. Advanced users can still select a different compatible GGML model or custom `whisper-cli` under **Transcription**.
 
 ## Required macOS permissions
 
@@ -115,7 +123,7 @@ Advanced users can still open and reload these files from the menu-bar menu. Mis
 
 ### Current model and cost
 
-The default setup uses `whisper.cpp` with `ggml-small.en.bin`. That model runs entirely on this Mac and costs **$0 per dictation**; recorded audio does not leave the device. The model file is stored locally and is roughly 466 MB.
+The default setup uses the bundled `whisper.cpp` 1.9.1 engine with `ggml-small.en.bin`. That model runs entirely on this Mac and costs **$0 per dictation**; recorded audio does not leave the device. The app is about 10 MB, while the separately downloaded model is 487,614,201 bytes (about 488 MB in decimal units).
 
 OpenAI and Groq are optional alternatives. If you select either cloud transcription provider and add its key to `.env`, audio is sent to that provider and usage is billed to the account that owns the key. FlowType itself has no subscription or account system.
 
@@ -191,7 +199,7 @@ Local, fully offline transcription is the default:
 {
   "transcription": {
     "provider": "local",
-    "localExecutable": "/opt/homebrew/bin/whisper-cli",
+    "localExecutable": "bundled",
     "localModelPath": "~/Library/Application Support/FlowType/models/ggml-small.en.bin",
     "language": "en"
   }
@@ -307,6 +315,20 @@ Restore the prior clipboard after waiting for the frontmost app to consume `Cmd-
 
 Clipboard restoration is inherently timing-sensitive in unusually slow apps. Increase the delay if an app sometimes pastes the prior clipboard value.
 
+### Update checks
+
+Allow the app to check GitHub's public latest-release endpoint at most once every 24 hours:
+
+```json
+{
+  "updates": {
+    "checkAutomatically": true
+  }
+}
+```
+
+Turn the setting off to make update checks manual-only. The menu-bar **Check for Updates…** action remains available. An update notice never downloads or installs executable code; Download Update opens the validated HTTPS GitHub release page.
+
 ## Product research that informed the scope
 
 - [Wispr Flow](https://docs.wisprflow.ai/articles/2772472373-what-is-flow) validates the hold/release and double-press hands-free gesture, but its current transcription requires an internet connection. FlowType keeps the gesture while making local transcription the default.
@@ -314,7 +336,7 @@ Clipboard restoration is inherently timing-sensitive in unusually slow apps. Inc
 - [VoiceInk](https://tryvoiceink.com/docs/introduction) shows the value of global push-to-talk, personal vocabulary, deterministic replacements, and recovery actions in a local-first tool.
 - [MacWhisper](https://docs.macwhisper.com/article/16-global) validates the smaller global overlay plus automatic clipboard workflow.
 
-This first version intentionally does not copy their account systems, transcript history, per-app modes, screen-context reading, command modes, or update infrastructure.
+FlowType intentionally does not copy their account systems, transcript history, per-app modes, screen-context reading, or command modes. Its update check is deliberately a small GitHub release notification rather than an executable self-updater.
 
 ## Privacy and data lifecycle
 
@@ -325,6 +347,7 @@ This first version intentionally does not copy their account systems, transcript
 - During active music lowering, a small local recovery file stores the output device identifier and prior volume. It is deleted after successful restoration.
 - LLM cleanup sends transcript text only when a cloud cleanup endpoint is enabled.
 - OpenAI/Groq transcription sends the audio to the selected provider; their API data terms apply.
+- If automatic update checks are enabled, FlowType makes an unauthenticated HTTPS request to GitHub's public latest-release endpoint at most once every 24 hours. It sends no FlowType account, transcript, audio, dictionary, or device identifier. GitHub still receives ordinary network metadata such as the request IP address.
 
 ## Development and verification
 
@@ -342,12 +365,27 @@ plutil -lint dist/FlowType.app/Contents/Info.plist
 codesign --verify --deep --strict --verbose=2 dist/FlowType.app
 ```
 
-A standard `Package.swift` and XCTest suite are also included for development in a full, internally consistent Xcode installation. The direct scripts use only Apple's compiler and frameworks and are the authoritative no-dependency build path.
+`scripts/build-whisper.sh` pins whisper.cpp `v1.9.1` to an exact source commit, builds static Apple silicon and Intel slices, joins them into one executable, and rejects developer-machine/Homebrew library links. `build-app.sh` includes that generated engine and the third-party license notices in the app.
+
+Build a universal Intel + Apple Silicon DMG and its SHA-256 checksum:
+
+```bash
+./scripts/package-release.sh
+```
+
+This packages `FlowType.app`, an Applications shortcut, the friend-install guide, and all license notices. The model itself is intentionally not in the DMG. Packaging does not publish, commit, push, change repository visibility, or weaken macOS security.
+
+A standard `Package.swift` and XCTest suite are also included for development in a full, internally consistent Xcode installation. The direct test script uses Apple's compiler/frameworks and remains the authoritative test path in this environment. Release builds additionally use CMake to compile the pinned bundled engine.
 
 ## Current boundaries
 
 - Transcription starts after release; there is no partial streaming transcript yet.
-- `whisper-cli` and the selected model are installed separately rather than inflating the app bundle by hundreds of megabytes.
+- The engine is included, but the ~488 MB model is a user-initiated first-run download. The first local dictation cannot work until that one download finishes.
 - Settings covers normal configuration; the cleanup prompt and fine-grained timing values remain advanced `config.json` options.
-- The local build is signed for personal use, not notarized for redistribution.
+- The community build is ad-hoc signed rather than Developer ID signed or notarized. Gatekeeper approval and occasional privacy-permission refreshes are an unavoidable distribution limitation.
+- Update checks notify and open the selected GitHub release page; the user replaces the app manually. There is intentionally no silent executable self-updater.
 - Device-level verification still requires a real microphone, macOS privacy grants, a focused third-party text field, and either a local model or provider key.
+
+## License
+
+FlowType is released under the permissive [MIT License](LICENSE). You may use, copy, modify, merge, publish, distribute, sublicense, or sell copies subject to the license notice and warranty disclaimer. Bundled local-transcription components and their exact versions are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

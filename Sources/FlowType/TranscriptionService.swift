@@ -2,9 +2,11 @@ import Foundation
 
 final class TranscriptionService {
     private let processRunner: ProcessRunner
+    private let bundle: Bundle
 
-    init(processRunner: ProcessRunner = ProcessRunner()) {
+    init(processRunner: ProcessRunner = ProcessRunner(), bundle: Bundle = .main) {
         self.processRunner = processRunner
+        self.bundle = bundle
     }
 
     func transcribe(
@@ -52,12 +54,16 @@ final class TranscriptionService {
     ) async throws -> String {
         let executablePath = resolveWhisperExecutable(config.localExecutable)
         guard FileManager.default.isExecutableFile(atPath: executablePath) else {
-            throw FlowTypeError.configuration("whisper-cli was not found at \(executablePath). Install whisper.cpp or update transcription.localExecutable in config.json.")
+            throw FlowTypeError.configuration(
+                "FlowType's offline transcription engine is missing. Reinstall FlowType, or choose a custom whisper-cli in Settings → Transcription."
+            )
         }
 
         let modelPath = config.localModelPath.expandingTildeInPath
         guard FileManager.default.fileExists(atPath: modelPath) else {
-            throw FlowTypeError.configuration("The local Whisper model was not found at \(modelPath). Download a small or medium ggml model, or update transcription.localModelPath.")
+            throw FlowTypeError.configuration(
+                "The offline Whisper model was not found. Open FlowType Settings and select Install Offline Model."
+            )
         }
 
         let outputBase = audioURL.deletingPathExtension().appendingPathExtension("transcript")
@@ -134,16 +140,26 @@ final class TranscriptionService {
         return try normalizedTranscript(text)
     }
 
-    private func resolveWhisperExecutable(_ configuredPath: String) -> String {
-        let expanded = configuredPath.expandingTildeInPath
-        if FileManager.default.isExecutableFile(atPath: expanded) {
+    func resolveWhisperExecutable(_ configuredPath: String) -> String {
+        let normalized = configuredPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expanded = normalized.expandingTildeInPath
+        if normalized.lowercased() != "bundled",
+           FileManager.default.isExecutableFile(atPath: expanded) {
             return expanded
         }
+
+        let bundled = bundle.resourceURL?
+            .appendingPathComponent("Whisper/bin/whisper-cli")
+            .path ?? ""
+        if FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+
         for candidate in ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
         where FileManager.default.isExecutableFile(atPath: candidate) {
             return candidate
         }
-        return expanded
+        return normalized.lowercased() == "bundled" ? bundled : expanded
     }
 
     private func normalizedTranscript(_ text: String) throws -> String {

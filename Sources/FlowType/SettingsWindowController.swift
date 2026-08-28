@@ -10,8 +10,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onRequestMonitorRetry: (() -> Void)?
 
     private let configStore: ConfigStore
+    private let modelManager: LocalModelManager
     private var draft = AppConfig.defaultConfig
     private var activeTranscriptionProvider = "local"
+
+    private let offlineEngineStatusLabel = SettingsWindowController.wrappingLabel("")
+    private let offlineModelStatusLabel = SettingsWindowController.wrappingLabel("")
+    private let offlineModelProgress = NSProgressIndicator()
+    private let offlineModelButton = NSButton(title: "Install Offline Model", target: nil, action: nil)
+    private let removeOfflineModelButton = NSButton(title: "Remove Model", target: nil, action: nil)
 
     private let enabledCheckbox = NSButton(checkboxWithTitle: "Dictation enabled", target: nil, action: nil)
     private let hotkeyPopup = NSPopUpButton()
@@ -32,6 +39,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let autoStopPopup = NSPopUpButton()
     private let restoreClipboardCheckbox = NSButton(
         checkboxWithTitle: "Restore the clipboard after pasting",
+        target: nil,
+        action: nil
+    )
+    private let automaticUpdateCheckbox = NSButton(
+        checkboxWithTitle: "Check GitHub for new releases automatically",
         target: nil,
         action: nil
     )
@@ -87,8 +99,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private static let permissionSetupAwaitingKey = "FlowTypePermissionSetupAwaiting"
 
-    init(configStore: ConfigStore) {
+    init(configStore: ConfigStore, modelManager: LocalModelManager) {
         self.configStore = configStore
+        self.modelManager = modelManager
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 670),
@@ -105,6 +118,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         configureControls()
         buildInterface(in: window)
+        modelManager.onStateChange = { [weak self] state in
+            self?.updateOfflineModelControls(state)
+        }
+        updateOfflineModelControls(modelManager.state)
     }
 
     required init?(coder: NSCoder) {
@@ -113,6 +130,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func showSettings() {
         reloadFromDisk()
+        modelManager.refresh()
         onVisibilityChange?(true)
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -178,6 +196,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func configureControls() {
+        offlineModelProgress.style = .bar
+        offlineModelProgress.minValue = 0
+        offlineModelProgress.maxValue = 1
+        offlineModelProgress.isIndeterminate = false
+        offlineModelProgress.isHidden = true
+        offlineModelButton.target = self
+        offlineModelButton.action = #selector(offlineModelButtonPressed)
+        removeOfflineModelButton.target = self
+        removeOfflineModelButton.action = #selector(removeOfflineModelPressed)
+
         for popup in [hotkeyPopup, toggleHotkeyPopup] {
             for (title, key) in Self.hotkeyChoices {
                 popup.addItem(withTitle: title)
@@ -303,6 +331,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildGeneralTab() -> NSView {
+        let offlineModelButtons = NSStackView(views: [offlineModelButton, removeOfflineModelButton])
+        offlineModelButtons.orientation = .horizontal
+        offlineModelButtons.spacing = 8
+
         let modifiers = NSStackView(views: [commandCheckbox, controlCheckbox, optionCheckbox, shiftCheckbox])
         modifiers.orientation = .horizontal
         modifiers.spacing = 10
@@ -342,6 +374,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         microphoneControls.spacing = 8
 
         return scrollingTab(views: [
+            sectionTitle("Offline transcription"),
+            offlineEngineStatusLabel,
+            offlineModelStatusLabel,
+            offlineModelProgress,
+            offlineModelButtons,
+            Self.helpLabel(
+                "The English small model is about 488 MB and downloads once. It stays in FlowType's Application Support folder, so app updates do not download or remove it. After installation, transcription works without internet or usage fees."
+            ),
+            divider(),
             sectionTitle("Dictation shortcuts"),
             enabledCheckbox,
             row(label: "Push to talk", control: hotkeyControls),
@@ -368,6 +409,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             restoreClipboardCheckbox,
             Self.helpLabel(
                 "Off leaves the finished transcript on your clipboard. On restores whatever was copied before dictation."
+            ),
+            automaticUpdateCheckbox,
+            Self.helpLabel(
+                "Checks at most once every 24 hours. FlowType only notifies you; downloads and installation always require your choice."
             ),
             divider(),
             sectionTitle("macOS permissions"),
@@ -555,6 +600,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         updateTranscriptionControls()
     }
 
+    @objc private func offlineModelButtonPressed() {
+        switch modelManager.state {
+        case .downloading:
+            modelManager.cancelDownload()
+        case .verifying:
+            break
+        case .notInstalled, .ready, .failed:
+            modelManager.install()
+        }
+    }
+
+    @objc private func removeOfflineModelPressed() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Remove the offline model?"
+        alert.informativeText = "Local transcription will stop working until you install the 488 MB model again. FlowType itself and your settings will remain installed."
+        alert.addButton(withTitle: "Remove Model")
+        alert.addButton(withTitle: "Keep Model")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try modelManager.removeInstalledModel()
+            updateProviderStatus()
+        } catch {
+            offlineModelStatusLabel.stringValue = "Could not remove the model: \(error.localizedDescription)"
+            offlineModelStatusLabel.textColor = .systemRed
+        }
+    }
+
     @objc private func cleanupControlsChanged() {
         updateCleanupControls()
     }
@@ -727,6 +801,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         hybridHotkeyCheckbox.state = draft.gestures.hybridPrimaryHotkey ? .on : .off
         select(number: draft.gestures.maxRecordingSeconds, in: autoStopPopup)
         restoreClipboardCheckbox.state = draft.clipboard.restorePrevious ? .on : .off
+        automaticUpdateCheckbox.state = draft.updates.checkAutomatically ? .on : .off
         populateMicrophonePopup()
         feedbackSoundsCheckbox.state = draft.audio.feedbackSoundsEnabled ? .on : .off
         voiceProcessingCheckbox.state = draft.audio.voiceProcessingEnabled ? .on : .off
@@ -768,6 +843,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.gestures.hybridPrimaryHotkey = hybridHotkeyCheckbox.state == .on
         draft.gestures.maxRecordingSeconds = selectedNumber(in: autoStopPopup) ?? 300
         draft.clipboard.restorePrevious = restoreClipboardCheckbox.state == .on
+        draft.updates.checkAutomatically = automaticUpdateCheckbox.state == .on
         draft.audio.feedbackSoundsEnabled = feedbackSoundsCheckbox.state == .on
         draft.audio.voiceProcessingEnabled = voiceProcessingCheckbox.state == .on
         draft.audio.lowerOtherAudioEnabled = lowerOtherAudioCheckbox.state == .on
@@ -825,6 +901,64 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func updateAudioControls() {
         duckingPopup.isEnabled = lowerOtherAudioCheckbox.state == .on
         updateMicrophoneStatus()
+    }
+
+    private func updateOfflineModelControls(_ state: LocalModelState) {
+        let bundledEngineURL = Bundle.main.resourceURL?
+            .appendingPathComponent("Whisper/bin/whisper-cli")
+        if let bundledEngineURL,
+           FileManager.default.isExecutableFile(atPath: bundledEngineURL.path) {
+            offlineEngineStatusLabel.stringValue = "Offline engine: included for Apple silicon and Intel Macs"
+            offlineEngineStatusLabel.textColor = .systemGreen
+        } else {
+            offlineEngineStatusLabel.stringValue = "Offline engine: missing from this app build"
+            offlineEngineStatusLabel.textColor = .systemRed
+        }
+
+        offlineModelProgress.isHidden = true
+        offlineModelProgress.isIndeterminate = false
+        removeOfflineModelButton.isHidden = !modelManager.isInstalled
+        offlineModelButton.isEnabled = true
+
+        switch state {
+        case .notInstalled:
+            offlineModelStatusLabel.stringValue = "Model: not installed"
+            offlineModelStatusLabel.textColor = .systemOrange
+            offlineModelButton.title = "Install Offline Model"
+        case .downloading(let fraction):
+            let percent = Int((fraction * 100).rounded())
+            offlineModelStatusLabel.stringValue = "Downloading model… \(percent)%"
+            offlineModelStatusLabel.textColor = .labelColor
+            offlineModelProgress.doubleValue = fraction
+            offlineModelProgress.isHidden = false
+            offlineModelButton.title = "Cancel Download"
+            removeOfflineModelButton.isHidden = true
+        case .verifying:
+            offlineModelStatusLabel.stringValue = "Verifying the model before installation…"
+            offlineModelStatusLabel.textColor = .labelColor
+            offlineModelProgress.isIndeterminate = true
+            offlineModelProgress.isHidden = false
+            offlineModelProgress.startAnimation(nil)
+            offlineModelButton.title = "Verifying…"
+            offlineModelButton.isEnabled = false
+            removeOfflineModelButton.isHidden = true
+        case .ready:
+            offlineModelStatusLabel.stringValue = "Model: installed and verified — ready for private, $0 local transcription"
+            offlineModelStatusLabel.textColor = .systemGreen
+            offlineModelButton.title = "Reinstall Model"
+        case .failed(let message):
+            offlineModelStatusLabel.stringValue = "Model setup failed: \(message)"
+            offlineModelStatusLabel.textColor = .systemRed
+            offlineModelButton.title = "Retry Download"
+        }
+        if case .verifying = state {} else {
+            offlineModelProgress.stopAnimation(nil)
+        }
+        if case .downloading = state {
+            // Avoid re-reading config and .env on every progress tick.
+        } else {
+            updateProviderStatus()
+        }
     }
 
     private func populateMicrophonePopup() {
@@ -953,9 +1087,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         case "local":
             let path = modelPathField.stringValue.expandingTildeInPath
             let modelDescription = fileDescription(atPath: path)
+            let modelExists = FileManager.default.fileExists(atPath: path)
             transcriptionStatusLabel.stringValue =
                 "Local whisper.cpp · $0 per dictation · audio stays on this Mac. \(modelDescription)"
-            transcriptionStatusLabel.textColor = .systemGreen
+            transcriptionStatusLabel.textColor = modelExists ? .systemGreen : .systemOrange
         case "openai":
             let configured = hasKey("OPENAI_API_KEY", in: environment)
             transcriptionStatusLabel.stringValue = configured

@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 import ServiceManagement
 
 @MainActor
@@ -7,9 +8,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: AppCoordinator?
     private var configStore: ConfigStore?
     private var settingsWindowController: SettingsWindowController?
+    private var localModelManager: LocalModelManager?
     private var enabledMenuItem: NSMenuItem?
     private var statusMenuItem: NSMenuItem?
     private var launchAtLoginMenuItem: NSMenuItem?
+    private var updatesMenuItem: NSMenuItem?
+    private var updateChecker: ReleaseUpdateChecker?
+    private var updateCheckTask: Task<Void, Never>?
+    private var automaticUpdateCheckWorkItem: DispatchWorkItem?
+    private var availableRelease: FlowTypeRelease?
+    private let updatePill = PillWindowController()
+
+    private static let lastUpdateCheckKey = "FlowTypeLastGitHubReleaseCheck"
+    private static let skippedUpdateVersionKey = "FlowTypeSkippedReleaseVersion"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -17,11 +28,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let configStore = try ConfigStore()
             let coordinator = try AppCoordinator(configStore: configStore)
+            let modelManager = LocalModelManager(applicationSupportURL: configStore.applicationSupportURL)
             self.configStore = configStore
             self.coordinator = coordinator
-            let settingsWindowController = SettingsWindowController(configStore: configStore)
-            settingsWindowController.onSave = { [weak coordinator] in
+            self.localModelManager = modelManager
+            let settingsWindowController = SettingsWindowController(
+                configStore: configStore,
+                modelManager: modelManager
+            )
+            settingsWindowController.onSave = { [weak self, weak coordinator] in
                 coordinator?.reloadConfiguration()
+                self?.updateConfigurationDidChange()
             }
             settingsWindowController.onVisibilityChange = { [weak coordinator] isVisible in
                 coordinator?.setSettingsPresented(isVisible)
@@ -40,12 +57,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.updateStatusIcon(isActive: enabled)
             }
             coordinator.start()
+            configureUpdateChecker()
+            scheduleAutomaticUpdateCheck()
 
             let onboardingKey = "FlowTypeHasShownSettingsWindowV1"
             let needsPermissions = !Permissions.canRecordAudio
                 || !Permissions.canMonitorInput
                 || !Permissions.canInsertText
-            if !UserDefaults.standard.bool(forKey: onboardingKey) || needsPermissions {
+            let config = try? configStore.load()
+            let needsLocalModel = config?.transcription.provider.lowercased() == "local"
+                && !FileManager.default.fileExists(
+                    atPath: config?.transcription.localModelPath.expandingTildeInPath ?? ""
+                )
+            if !UserDefaults.standard.bool(forKey: onboardingKey) || needsPermissions || needsLocalModel {
                 UserDefaults.standard.set(true, forKey: onboardingKey)
                 DispatchQueue.main.async { [weak self] in self?.showSettings() }
             }
@@ -62,6 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        automaticUpdateCheckWorkItem?.cancel()
+        updateCheckTask?.cancel()
+        updatePill.hide()
+        localModelManager?.cancelDownload()
         coordinator?.shutdown()
     }
 
@@ -85,6 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status.isEnabled = false
         menu.addItem(status)
         statusMenuItem = status
+
+        let updates = menuItem(title: "Check for Updates…", action: #selector(checkForUpdates))
+        menu.addItem(updates)
+        updatesMenuItem = updates
 
         menu.addItem(.separator())
         menu.addItem(menuItem(title: "Open config.json", action: #selector(openConfig)))
@@ -143,6 +175,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func reloadConfiguration() {
         coordinator?.reloadConfiguration()
+        updateConfigurationDidChange()
+    }
+
+    @objc private func checkForUpdates() {
+        if let availableRelease {
+            presentUpdate(release: availableRelease)
+        } else {
+            beginUpdateCheck(isManual: true)
+        }
     }
 
     @objc private func requestMicrophonePermission() {
@@ -192,6 +233,173 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettings() {
         settingsWindowController?.showSettings()
+    }
+
+    private func configureUpdateChecker() {
+        guard let endpointValue = Bundle.main.object(forInfoDictionaryKey: "FlowTypeReleaseAPIURL") as? String,
+              let endpoint = URL(string: endpointValue),
+              endpoint.scheme == "https",
+              endpoint.host == "api.github.com" else {
+            updatesMenuItem?.isEnabled = false
+            updatesMenuItem?.title = "Updates are not configured"
+            return
+        }
+        updateChecker = ReleaseUpdateChecker(endpoint: endpoint)
+    }
+
+    private func scheduleAutomaticUpdateCheck() {
+        automaticUpdateCheckWorkItem?.cancel()
+        automaticUpdateCheckWorkItem = nil
+        guard automaticUpdateChecksEnabled else { return }
+        let lastCheck = UserDefaults.standard.object(forKey: Self.lastUpdateCheckKey) as? Date
+        guard ReleaseUpdateChecker.shouldCheckAutomatically(lastCheck: lastCheck) else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.automaticUpdateCheckWorkItem = nil
+            guard self.automaticUpdateChecksEnabled else { return }
+            self.beginUpdateCheck(isManual: false)
+        }
+        automaticUpdateCheckWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: workItem)
+    }
+
+    private var automaticUpdateChecksEnabled: Bool {
+        guard let configStore, let config = try? configStore.load() else { return false }
+        return config.updates.checkAutomatically
+    }
+
+    private var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    private func updateConfigurationDidChange() {
+        if automaticUpdateChecksEnabled {
+            scheduleAutomaticUpdateCheck()
+        } else {
+            automaticUpdateCheckWorkItem?.cancel()
+            automaticUpdateCheckWorkItem = nil
+            updateCheckTask?.cancel()
+        }
+    }
+
+    private func beginUpdateCheck(isManual: Bool) {
+        guard updateCheckTask == nil else { return }
+        guard let updateChecker else {
+            if isManual {
+                presentError(
+                    title: "Update checking is unavailable",
+                    message: "This build does not contain a valid GitHub release endpoint."
+                )
+            }
+            return
+        }
+
+        if isManual {
+            updatesMenuItem?.title = "Checking for Updates…"
+            updatesMenuItem?.isEnabled = false
+        }
+        UserDefaults.standard.set(Date(), forKey: Self.lastUpdateCheckKey)
+        let installedVersion = currentVersion
+
+        updateCheckTask = Task { @MainActor [weak self] in
+            defer { self?.updateCheckTask = nil }
+            do {
+                let outcome = try await updateChecker.check(currentVersion: installedVersion)
+                guard !Task.isCancelled else { return }
+                self?.finishUpdateCheck(outcome, isManual: isManual)
+            } catch is CancellationError {
+                self?.resetUpdatesMenuItem()
+            } catch {
+                self?.resetUpdatesMenuItem()
+                if isManual {
+                    self?.presentError(title: "Could not check for updates", message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func finishUpdateCheck(_ outcome: ReleaseCheckOutcome, isManual: Bool) {
+        switch outcome {
+        case .updateAvailable(let release):
+            availableRelease = release
+            let skippedVersion = UserDefaults.standard.string(forKey: Self.skippedUpdateVersionKey)
+            if isManual {
+                presentUpdate(release: release)
+            } else if skippedVersion != release.version {
+                updatesMenuItem?.title = "Update Available: FlowType \(release.version)…"
+                updatesMenuItem?.isEnabled = true
+                updatePill.show(
+                    "FlowType \(release.version) available — use the menu bar",
+                    appearance: .update
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                    guard self?.availableRelease?.version == release.version else { return }
+                    self?.updatePill.hide()
+                }
+            } else {
+                resetUpdatesMenuItem()
+            }
+        case .upToDate:
+            availableRelease = nil
+            resetUpdatesMenuItem()
+            if isManual {
+                presentMessage(
+                    title: "FlowType is up to date",
+                    message: "You are running the latest published version (\(currentVersion))."
+                )
+            }
+        case .feedUnavailable:
+            availableRelease = nil
+            resetUpdatesMenuItem()
+            if isManual {
+                presentMessage(
+                    title: "No public release feed yet",
+                    message: "The GitHub repository may still be private, or no release has been published. This will start working after the project and its first release are public."
+                )
+            }
+        }
+    }
+
+    private func presentUpdate(release: FlowTypeRelease) {
+        updatePill.hide()
+        NSApp.activate(ignoringOtherApps: true)
+
+        let notes = release.notes.isEmpty
+            ? "A new version of FlowType is available on GitHub."
+            : String(release.notes.prefix(2_000))
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "FlowType \(release.version) is available"
+        alert.informativeText = notes + "\n\nUpdates are never installed automatically. Downloading opens the GitHub release page."
+        alert.addButton(withTitle: "Download Update")
+        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "Skip This Version")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            NSWorkspace.shared.open(release.webpageURL)
+        case .alertThirdButtonReturn:
+            UserDefaults.standard.set(release.version, forKey: Self.skippedUpdateVersionKey)
+            resetUpdatesMenuItem()
+        default:
+            updatesMenuItem?.title = "Update Available: FlowType \(release.version)…"
+            updatesMenuItem?.isEnabled = true
+        }
+    }
+
+    private func resetUpdatesMenuItem() {
+        updatesMenuItem?.title = "Check for Updates…"
+        updatesMenuItem?.isEnabled = updateChecker != nil
+    }
+
+    private func presentMessage(title: String, message: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.runModal()
     }
 
     private func presentError(title: String, message: String) {
