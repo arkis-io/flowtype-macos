@@ -6,6 +6,7 @@ final class ConfigStore {
     let defaultDictionaryURL: URL
     let environmentURL: URL
     let outputVolumeRecoveryURL: URL
+    let recordingsURL: URL
 
     init(fileManager: FileManager = .default) throws {
         let base = try fileManager.url(
@@ -22,8 +23,11 @@ final class ConfigStore {
         defaultDictionaryURL = base.appendingPathComponent("dictionary.txt")
         environmentURL = base.appendingPathComponent(".env")
         outputVolumeRecoveryURL = base.appendingPathComponent("output-volume-recovery.json")
+        recordingsURL = base.appendingPathComponent("recordings", isDirectory: true)
 
         try createDefaultsIfNeeded(fileManager: fileManager)
+        try fileManager.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: recordingsURL.path)
     }
 
     func load() throws -> AppConfig {

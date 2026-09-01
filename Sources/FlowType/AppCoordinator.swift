@@ -4,8 +4,12 @@ import Foundation
 final class AppCoordinator {
     var onStatusChange: ((String) -> Void)?
     var onEnabledChange: ((Bool) -> Void)?
+    var onHistoryChange: (() -> Void)?
+    var onBusyChange: ((Bool) -> Void)?
 
     private(set) var config: AppConfig
+    let historyStore: RecordingHistoryStore
+
     private let configStore: ConfigStore
     private let eventMonitor: GlobalEventMonitor
     private let audioRecorder = AudioRecorder()
@@ -20,11 +24,38 @@ final class AppCoordinator {
     private var stateMachine = GestureStateMachine()
     private var doubleTapTimer: Timer?
     private var autoStopTimer: Timer?
+    private var inputLevelTimer: Timer?
     private var processingTask: Task<Void, Never>?
-    private var currentSessionID: UUID?
+    private var activeCaptureID: UUID?
+    private var currentContext: ProcessingContext?
+    private var musicLoweringUnavailable = false
 
-    init(configStore: ConfigStore) throws {
+    private enum AttemptOrigin: Equatable {
+        case newCapture
+        case retryLast
+        case history
+    }
+
+    private enum Delivery: Equatable {
+        case paste(keepClipboard: Bool)
+        case historyOnly
+    }
+
+    private struct ProcessingContext: Equatable {
+        let attemptID: UUID
+        let entryID: UUID
+        let origin: AttemptOrigin
+        let delivery: Delivery
+    }
+
+    private enum CancellationReason {
+        case escape
+        case lifecycle
+    }
+
+    init(configStore: ConfigStore, historyStore: RecordingHistoryStore) throws {
         self.configStore = configStore
+        self.historyStore = historyStore
         outputVolumeDucker = OutputVolumeDucker(recoveryURL: configStore.outputVolumeRecoveryURL)
         config = try configStore.load()
         try SettingsValidator.validate(config)
@@ -44,14 +75,23 @@ final class AppCoordinator {
         }
     }
 
+    var isBusy: Bool {
+        activeCaptureID != nil || currentContext != nil || audioRecorder.isRecording
+    }
+
+    var activeEntryIDs: Set<UUID> {
+        Set([activeCaptureID, currentContext?.entryID].compactMap { $0 })
+    }
+
     func start() {
         _ = outputVolumeDucker.restoreIfNeeded()
         installEventMonitor()
         onEnabledChange?(config.enabled)
+        onBusyChange?(isBusy)
     }
 
     func shutdown() {
-        cancelCurrentWork()
+        cancelCurrentWork(reason: .lifecycle)
     }
 
     func reloadConfiguration() {
@@ -62,7 +102,7 @@ final class AppCoordinator {
             config = loaded
             installEventMonitor()
             if !config.enabled {
-                cancelCurrentWork()
+                cancelCurrentWork(reason: .lifecycle)
             }
             onEnabledChange?(config.enabled)
             onStatusChange?(config.enabled ? "Ready — \(hotkeyDescription)" : "Dictation is off")
@@ -74,7 +114,7 @@ final class AppCoordinator {
     func setEnabled(_ enabled: Bool) {
         config.enabled = enabled
         if !enabled {
-            cancelCurrentWork()
+            cancelCurrentWork(reason: .lifecycle)
         }
         do {
             try configStore.save(config)
@@ -91,7 +131,29 @@ final class AppCoordinator {
 
     func setSettingsPresented(_ presented: Bool) {
         if presented {
-            cancelCurrentWork()
+            cancelCurrentWork(reason: .lifecycle)
+        }
+    }
+
+    func retryLastTranscription() {
+        do {
+            guard !isBusy, stateMachine.phase == .idle else {
+                throw RecordingHistoryStoreError.unavailable("FlowType is already recording or processing audio.")
+            }
+            guard let entry = try historyStore.newestRetryableEntry(activeIDs: activeEntryIDs) else {
+                throw RecordingHistoryStoreError.unavailable("There is no retained recording available to retry.")
+            }
+            try beginRetry(entryID: entry.id, origin: .retryLast, delivery: .paste(keepClipboard: true))
+        } catch {
+            showError(error.localizedDescription)
+        }
+    }
+
+    func retryHistoryEntry(id: UUID) {
+        do {
+            try beginRetry(entryID: id, origin: .history, delivery: .historyOnly)
+        } catch {
+            showError(error.localizedDescription)
         }
     }
 
@@ -157,14 +219,34 @@ final class AppCoordinator {
             switch action {
             case .startRecording:
                 do {
-                    try audioRecorder.start(config: config.audio)
+                    let capture = try historyStore.beginCapture()
+                    do {
+                        try audioRecorder.start(
+                            config: config.audio,
+                            destinationDirectory: capture.directoryURL
+                        )
+                    } catch {
+                        try? historyStore.discardCapture(id: capture.entryID)
+                        throw error
+                    }
+                    activeCaptureID = capture.entryID
+                    notifyBusyAndHistoryChanged()
                     audioFeedback.playStarted(ifEnabled: config.audio.feedbackSoundsEnabled)
-                    _ = outputVolumeDucker.begin(
+                    let musicWasLowered = outputVolumeDucker.begin(
                         enabled: config.audio.lowerOtherAudioEnabled,
                         level: config.audio.duckingLevel
                     )
+                    musicLoweringUnavailable = config.audio.lowerOtherAudioEnabled && !musicWasLowered
+                    scheduleInputLevelUpdates()
                     scheduleAutoStop()
-                    onStatusChange?("Recording")
+                    let routingStatus = audioRecorder.activeInputRoutingNote.isEmpty
+                        ? "Recording with \(audioRecorder.activeInputDeviceName)"
+                        : audioRecorder.activeInputRoutingNote
+                    onStatusChange?(
+                        musicLoweringUnavailable
+                            ? "\(routingStatus) — music could not be lowered"
+                            : routingStatus
+                    )
                 } catch {
                     stateMachine.reset()
                     cancelTimers()
@@ -173,11 +255,23 @@ final class AppCoordinator {
                 }
 
             case .showHeldMode:
-                pill.show("Hold · \(activeMicrophoneLabel)", appearance: .held)
+                pill.show(
+                    musicLoweringUnavailable ? "Hold · music unchanged" : "Hold · \(activeMicrophoneLabel)",
+                    appearance: .held
+                )
 
             case .showHandsFreeMode:
-                pill.show("Hands-free · \(activeMicrophoneLabel)", appearance: .handsFree)
-                onStatusChange?("Hands-free recording")
+                pill.show(
+                    musicLoweringUnavailable
+                        ? "Hands-free · music unchanged"
+                        : "Hands-free · \(activeMicrophoneLabel)",
+                    appearance: .handsFree
+                )
+                onStatusChange?(
+                    musicLoweringUnavailable
+                        ? "Hands-free recording — music could not be lowered"
+                        : "Hands-free recording"
+                )
 
             case .scheduleDoubleTapExpiry(let interval):
                 doubleTapTimer?.invalidate()
@@ -195,7 +289,7 @@ final class AppCoordinator {
                 stopAndProcess()
 
             case .cancel:
-                cancelCurrentWork()
+                cancelCurrentWork(reason: .escape)
                 onStatusChange?(config.enabled ? "Cancelled — \(hotkeyDescription)" : "Dictation is off")
 
             case .hide:
@@ -218,101 +312,327 @@ final class AppCoordinator {
 
     private func stopAndProcess() {
         cancelTimers()
-
-        let sourceURL: URL
-        do {
-            sourceURL = try audioRecorder.stop()
-            _ = outputVolumeDucker.restoreIfNeeded()
-            audioFeedback.playStopped(ifEnabled: config.audio.feedbackSoundsEnabled)
-        } catch {
-            _ = outputVolumeDucker.restoreIfNeeded()
+        guard let entryID = activeCaptureID else {
             stateMachine.reset()
-            showError(error.localizedDescription)
+            showError("FlowType lost the active recording identifier. Please record again.")
             return
         }
 
-        let sessionID = UUID()
-        currentSessionID = sessionID
+        let context = ProcessingContext(
+            attemptID: UUID(),
+            entryID: entryID,
+            origin: .newCapture,
+            delivery: .paste(keepClipboard: false)
+        )
+        currentContext = context
+        notifyBusyAndHistoryChanged()
         let configSnapshot = config
         let environment = configStore.loadEnvironment()
         let dictionary = PersonalDictionary.load(from: configSnapshot.dictionaryPath)
-        pill.show("Transcribing…", appearance: .processing)
-        onStatusChange?("Transcribing")
+        pill.show("Finishing audio…", appearance: .processing)
+        onStatusChange?("Finishing recording")
 
         processingTask = Task { [weak self] in
             guard let self else { return }
-            let directory = sourceURL.deletingLastPathComponent()
-            defer { try? FileManager.default.removeItem(at: directory) }
-
             do {
-                let wavURL = try await audioConverter.convertToWhisperWAV(sourceURL)
-                let rawTranscript = try await transcriptionService.transcribe(
-                    audioURL: wavURL,
-                    config: configSnapshot.transcription,
-                    environment: environment,
-                    dictionary: dictionary
-                )
-                try Task.checkCancellation()
+                let sourceURL = try await audioRecorder.stop()
+                let duration = audioRecorder.duration(of: sourceURL)
+                _ = outputVolumeDucker.restoreIfNeeded()
+                audioFeedback.playStopped(ifEnabled: configSnapshot.audio.feedbackSoundsEnabled)
+                try ensureCurrent(context)
 
-                if configSnapshot.cleanup.enabled {
-                    pill.show("Cleaning up…", appearance: .processing)
-                    onStatusChange?("Cleaning transcript")
+                _ = try historyStore.promoteCapture(id: entryID, durationSeconds: duration)
+                activeCaptureID = nil
+                notifyBusyAndHistoryChanged()
+                _ = try historyStore.beginAttempt(
+                    id: entryID,
+                    provider: configSnapshot.transcription.provider
+                )
+                guard let durableAudioURL = try historyStore.audioURL(for: entryID) else {
+                    throw RecordingHistoryStoreError.unavailable("The finalized recording is missing.")
                 }
-                let cleaned = try await cleanupService.clean(
-                    transcript: rawTranscript,
-                    config: configSnapshot.cleanup,
+                try await runPipeline(
+                    context: context,
+                    audioURL: durableAudioURL,
+                    configSnapshot: configSnapshot,
                     environment: environment,
                     dictionary: dictionary
                 )
-                try Task.checkCancellation()
-
-                let finalText = dictionary.applyingReplacements(to: cleaned)
-                guard currentSessionID == sessionID else { throw CancellationError() }
-                try insertionService.insert(finalText, config: configSnapshot.clipboard)
-                finishProcessing(sessionID: sessionID)
             } catch is CancellationError {
-                finishCancelledProcessing(sessionID: sessionID)
+                finishCancelledTask(context)
             } catch {
-                finishProcessing(sessionID: sessionID, errorMessage: error.localizedDescription)
+                _ = outputVolumeDucker.restoreIfNeeded()
+                if isCurrent(context) {
+                    if (try? historyStore.loadEntry(id: entryID)) != nil {
+                        _ = try? historyStore.failAttempt(
+                            id: entryID,
+                            stage: .capture,
+                            message: error.localizedDescription
+                        )
+                    } else {
+                        try? historyStore.discardCapture(id: entryID)
+                        activeCaptureID = nil
+                    }
+                    finishWithError(context, message: error.localizedDescription)
+                }
             }
         }
     }
 
-    private func finishProcessing(sessionID: UUID, errorMessage: String? = nil) {
-        guard currentSessionID == sessionID else { return }
-        currentSessionID = nil
-        processingTask = nil
-        _ = stateMachine.handle(.processingFinished, config: config.gestures)
+    private func beginRetry(
+        entryID: UUID,
+        origin: AttemptOrigin,
+        delivery: Delivery
+    ) throws {
+        guard !isBusy, stateMachine.phase == .idle else {
+            throw RecordingHistoryStoreError.unavailable("FlowType is already recording or processing audio.")
+        }
+        let eligibility = try historyStore.retryEligibility(for: entryID, activeIDs: activeEntryIDs)
+        guard case .available(let audioURL) = eligibility else {
+            if case .unavailable(let reason) = eligibility {
+                throw RecordingHistoryStoreError.unavailable(reason)
+            }
+            throw RecordingHistoryStoreError.unavailable("This recording cannot be retried.")
+        }
 
-        if let errorMessage {
-            showError(errorMessage)
-        } else {
-            pill.hide()
-            onStatusChange?(config.enabled ? "Ready — \(hotkeyDescription)" : "Dictation is off")
+        _ = stateMachine.handle(.beginExternalProcessing, config: config.gestures)
+        guard stateMachine.phase == .processing else {
+            throw RecordingHistoryStoreError.unavailable("FlowType could not enter retry mode.")
+        }
+
+        let context = ProcessingContext(
+            attemptID: UUID(),
+            entryID: entryID,
+            origin: origin,
+            delivery: delivery
+        )
+        let configSnapshot = config
+        let environment = configStore.loadEnvironment()
+        let dictionary = PersonalDictionary.load(from: configSnapshot.dictionaryPath)
+        do {
+            _ = try historyStore.beginAttempt(
+                id: entryID,
+                provider: configSnapshot.transcription.provider
+            )
+        } catch {
+            stateMachine.reset()
+            throw error
+        }
+
+        currentContext = context
+        notifyBusyAndHistoryChanged()
+        pill.show("Retranscribing…", appearance: .processing)
+        onStatusChange?("Retranscribing retained audio")
+        processingTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await runPipeline(
+                    context: context,
+                    audioURL: audioURL,
+                    configSnapshot: configSnapshot,
+                    environment: environment,
+                    dictionary: dictionary
+                )
+            } catch is CancellationError {
+                finishCancelledTask(context)
+            } catch {
+                guard isCurrent(context) else { return }
+                let stage = stageFor(error: error)
+                _ = try? historyStore.failAttempt(
+                    id: entryID,
+                    stage: stage,
+                    message: error.localizedDescription,
+                    unusableAudio: stage == .conversion && isUnusableAudioError(error)
+                )
+                finishWithError(context, message: error.localizedDescription)
+            }
         }
     }
 
-    private func finishCancelledProcessing(sessionID: UUID) {
-        guard currentSessionID == sessionID else { return }
-        currentSessionID = nil
+    private func runPipeline(
+        context: ProcessingContext,
+        audioURL: URL,
+        configSnapshot: AppConfig,
+        environment: [String: String],
+        dictionary: PersonalDictionary
+    ) async throws {
+        var currentStage = RecordingStage.conversion
+        let convertsSourceAudio = audioURL.pathExtension.lowercased() != "wav"
+        do {
+            try ensureCurrent(context)
+            _ = try historyStore.updateStage(id: context.entryID, stage: .conversion)
+            let wavURL: URL
+            if audioURL.pathExtension.lowercased() == "wav" {
+                wavURL = audioURL
+            } else {
+                let convertedURL = try await audioConverter.convertToWhisperWAV(
+                    audioURL,
+                    boostQuietSpeech: configSnapshot.audio.boostQuietSpeechEnabled
+                )
+                try ensureCurrent(context)
+                wavURL = try historyStore.canonicalizeAudio(
+                    id: context.entryID,
+                    convertedURL: convertedURL
+                )
+            }
+
+            currentStage = .transcription
+            try ensureCurrent(context)
+            _ = try historyStore.updateStage(id: context.entryID, stage: .transcription)
+            pill.show("Transcribing…", appearance: .processing)
+            onStatusChange?("Transcribing")
+            let rawTranscript = try await transcriptionService.transcribe(
+                audioURL: wavURL,
+                config: configSnapshot.transcription,
+                environment: environment,
+                dictionary: dictionary
+            )
+            try ensureCurrent(context)
+            _ = try historyStore.saveRawTranscript(id: context.entryID, text: rawTranscript)
+
+            currentStage = .cleanup
+            _ = try historyStore.updateStage(id: context.entryID, stage: .cleanup)
+            if configSnapshot.cleanup.enabled {
+                pill.show("Cleaning up…", appearance: .processing)
+                onStatusChange?("Cleaning transcript")
+            }
+            let cleaned = try await cleanupService.clean(
+                transcript: rawTranscript,
+                config: configSnapshot.cleanup,
+                environment: environment,
+                dictionary: dictionary
+            )
+            try ensureCurrent(context)
+
+            let finalText = dictionary.applyingReplacements(to: cleaned)
+            _ = try historyStore.completeAttempt(
+                id: context.entryID,
+                rawTranscript: rawTranscript,
+                finalTranscript: finalText
+            )
+            notifyBusyAndHistoryChanged()
+
+            if case .paste(let keepClipboard) = context.delivery {
+                currentStage = .insertion
+                var clipboardConfig = configSnapshot.clipboard
+                if keepClipboard {
+                    clipboardConfig.restorePrevious = false
+                }
+                do {
+                    try ensureCurrent(context)
+                    try insertionService.insert(finalText, config: clipboardConfig)
+                } catch {
+                    _ = try? historyStore.recordInsertionFailure(
+                        id: context.entryID,
+                        message: error.localizedDescription
+                    )
+                    finishWithError(context, message: error.localizedDescription)
+                    return
+                }
+            }
+            finishSuccessfully(context)
+        } catch is CancellationError {
+            if currentStage == .conversion && convertsSourceAudio {
+                historyStore.removePartialConvertedAudio(id: context.entryID)
+            }
+            throw CancellationError()
+        } catch {
+            guard isCurrent(context) else { throw CancellationError() }
+            if currentStage == .conversion && convertsSourceAudio {
+                historyStore.removePartialConvertedAudio(id: context.entryID)
+            }
+            _ = try? historyStore.failAttempt(
+                id: context.entryID,
+                stage: currentStage,
+                message: error.localizedDescription,
+                unusableAudio: currentStage == .conversion && isUnusableAudioError(error)
+            )
+            finishWithError(context, message: error.localizedDescription)
+        }
+    }
+
+    private func ensureCurrent(_ context: ProcessingContext) throws {
+        try Task.checkCancellation()
+        guard isCurrent(context) else { throw CancellationError() }
+    }
+
+    private func isCurrent(_ context: ProcessingContext) -> Bool {
+        currentContext?.attemptID == context.attemptID
+            && currentContext?.entryID == context.entryID
+    }
+
+    private func finishSuccessfully(_ context: ProcessingContext) {
+        guard isCurrent(context) else { return }
+        currentContext = nil
+        processingTask = nil
+        _ = stateMachine.handle(.processingFinished, config: config.gestures)
+        notifyBusyAndHistoryChanged()
+        let message = context.origin == .history ? "Transcript ready in History" : "Transcript ready"
+        pill.show(message, appearance: .success, autoHideAfter: 1.8)
+        onStatusChange?(config.enabled ? "Ready — \(hotkeyDescription)" : "Dictation is off")
+    }
+
+    private func finishWithError(_ context: ProcessingContext, message: String) {
+        guard isCurrent(context) else { return }
+        currentContext = nil
+        processingTask = nil
+        _ = stateMachine.handle(.processingFinished, config: config.gestures)
+        notifyBusyAndHistoryChanged()
+        showError(message)
+    }
+
+    private func finishCancelledTask(_ context: ProcessingContext) {
+        guard isCurrent(context) else { return }
+        currentContext = nil
         processingTask = nil
         stateMachine.reset()
+        notifyBusyAndHistoryChanged()
         pill.hide()
     }
 
-    private func cancelCurrentWork() {
+    private func cancelCurrentWork(reason: CancellationReason) {
         cancelTimers()
+        let captureID = activeCaptureID
+        let context = currentContext
         let wasRecording = audioRecorder.isRecording
-        audioRecorder.cancel()
+        let retainFinalizingCapture = reason == .lifecycle && context?.origin == .newCapture
+        audioRecorder.cancel(retainRecording: retainFinalizingCapture)
         _ = outputVolumeDucker.restoreIfNeeded()
         if wasRecording {
             audioFeedback.playStopped(ifEnabled: config.audio.feedbackSoundsEnabled)
         }
         processingTask?.cancel()
         processingTask = nil
-        currentSessionID = nil
+
+        if let context {
+            let workKind: RecordingWorkKind = context.origin == .newCapture ? .initialProcessing : .retry
+            let cause: RecordingCancellationCause = reason == .escape ? .escape : .lifecycle
+            switch RecordingCancellationPolicy.disposition(for: workKind, cause: cause) {
+            case .delete:
+                try? historyStore.discardCapture(id: context.entryID)
+            case .retainInterrupted:
+                if context.origin == .newCapture {
+                    if (try? historyStore.loadEntry(id: context.entryID)) != nil {
+                        _ = try? historyStore.markInterrupted(id: context.entryID)
+                    }
+                } else {
+                    _ = try? historyStore.markInterrupted(
+                        id: context.entryID,
+                        message: reason == .escape
+                            ? "The retry was cancelled. The retained audio is still available."
+                            : "The retry was interrupted. The retained audio is still available."
+                    )
+                }
+            }
+        } else if let captureID {
+            try? historyStore.discardCapture(id: captureID)
+        }
+
+        activeCaptureID = nil
+        currentContext = nil
         stateMachine.reset()
         pill.hide()
+        notifyBusyAndHistoryChanged()
     }
 
     private func cancelTimers() {
@@ -320,15 +640,47 @@ final class AppCoordinator {
         doubleTapTimer = nil
         autoStopTimer?.invalidate()
         autoStopTimer = nil
+        inputLevelTimer?.invalidate()
+        inputLevelTimer = nil
+    }
+
+    private func scheduleInputLevelUpdates() {
+        inputLevelTimer?.invalidate()
+        inputLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.audioRecorder.isRecording else { return }
+                self.pill.updateInputLevel(self.audioRecorder.normalizedInputLevel)
+            }
+        }
+    }
+
+    private func notifyBusyAndHistoryChanged() {
+        onBusyChange?(isBusy)
+        onHistoryChange?()
+    }
+
+    private func stageFor(error: Error) -> RecordingStage {
+        guard let flowError = error as? FlowTypeError else { return .transcription }
+        switch flowError {
+        case .recording, .conversion: return .conversion
+        case .transcription, .configuration: return .transcription
+        case .cleanup: return .cleanup
+        case .insertion, .permission: return .insertion
+        }
+    }
+
+    private func isUnusableAudioError(_ error: Error) -> Bool {
+        guard let flowError = error as? FlowTypeError,
+              case .recording(let message) = flowError else { return false }
+        let normalized = message.lowercased()
+        return normalized.contains("no microphone audio")
+            || normalized.contains("no audio frames")
+            || normalized.contains("nearly silent")
     }
 
     private func showError(_ message: String) {
         let compactMessage = message.replacingOccurrences(of: "\n", with: " ")
-        pill.show(String(compactMessage.prefix(90)), appearance: .error)
+        pill.show(String(compactMessage.prefix(90)), appearance: .error, autoHideAfter: 4)
         onStatusChange?(String(compactMessage.prefix(240)))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            guard let self, self.stateMachine.phase == .idle else { return }
-            self.pill.hide()
-        }
     }
 }

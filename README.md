@@ -9,19 +9,22 @@ It is a native Swift/AppKit menu-bar app with no account system, analytics, tele
 - Use one hybrid shortcut: tap once for hands-free recording or hold for push to talk.
 - Optionally turn hybrid behavior off and assign a separate hands-free shortcut.
 - Legacy two-shortcut mode also supports double-tapping push to talk to keep the same recording hands-free.
-- Play distinct start and stop sounds so recording state is audible as well as visible.
-- Follow the current macOS input automatically, or choose a specific connected microphone such as AirPods.
+- Play the same short Pop sound at recording start and stop so both boundaries are clear.
+- Follow the current macOS input automatically, or choose a specific connected microphone. When AirPods are handling output and are also the default input, Automatic mode uses the Mac microphone to avoid Bluetooth's low-quality two-way audio mode.
+- Test the selected microphone for three seconds in Settings and watch a live input meter both there and in the recording pill.
 - Lower music and other output independently while recording, then restore the exact previous volume after stop, cancellation, quit, or crash recovery.
-- Optionally use Apple's experimental voice processing for automatic gain and voice clarity, with safe fallback to normal capture.
+- Optionally apply bounded post-capture gain to quiet speech without changing healthy recordings.
 - Hands-free and held recordings stop automatically after five minutes.
 - `Esc` cancels a recording or an in-flight local/API transcription. FlowType observes Escape with a listen-only event tap, so Escape still reaches the frontmost app.
 - Local transcription through the universal `whisper.cpp` engine included in FlowType, or hosted transcription through OpenAI or Groq.
-- A first-run Model Manager installs, verifies, retries, cancels, reinstalls, or removes the local English model without Homebrew or Terminal.
+- A first-run Model Manager offers recommended Medium English or faster Small English, then installs, verifies, retries, cancels, reinstalls, or removes it without Homebrew or Terminal.
+- Local transcription uses a bundled Silero voice-activity model to discard silence and background-only markers before paste.
 - Optional cleanup through an OpenAI-compatible language-model endpoint.
 - A personal dictionary provides recognition hints and deterministic spelling replacements.
 - The transcript remains on the clipboard by default. A config flag can restore the previous clipboard after pasting.
-- A non-activating floating pill shows held, hands-free, processing, and error states without stealing keyboard focus.
-- A native Settings window edits shortcut behavior, audio feedback, music lowering, voice processing, the five-minute safety limit, clipboard behavior, providers, model paths, and personal dictionary.
+- Retain finalized recordings locally for three days, with **Retry Last Transcription** and an on-demand History window for playback, retry, copy, and individual deletion.
+- A non-activating, click-through waveform pill appears only while recording, processing, or showing brief success/error/update feedback; it never remains on screen at idle.
+- A native Settings window edits shortcut behavior, microphone routing/testing, quiet-speech boost, audio feedback, music lowering, the five-minute safety limit, clipboard behavior, providers, model choice, and personal dictionary.
 - Menu-bar controls for settings, on/off, configuration files, permissions, launch at login, and quit.
 - Optional daily GitHub release checks. FlowType shows a non-activating notice and lets the user choose Download, Later, or Skip; it never installs an update silently.
 
@@ -43,9 +46,9 @@ keyboard event
     ↓
 gesture state machine (quick tap / held / hands-free / cancel)
     ↓
-selected/default microphone → native recording → temporary 16 kHz mono WAV
+    selected/default microphone → private staged capture → retained 16 kHz mono WAV
     ↓
-local whisper.cpp OR OpenAI/Groq transcription
+local Silero VAD + whisper.cpp OR OpenAI/Groq transcription
     ↓
 optional LLM cleanup → exact dictionary replacements
     ↓
@@ -54,13 +57,15 @@ clipboard → simulated Cmd-V at the current cursor
 
 The state machine is important. It gives late API responses and `Esc` cancellation an explicit session identity, so a cancelled dictation cannot unexpectedly paste several seconds later.
 
+Finalized audio and versioned metadata live under Application Support for three days. A retry runs that same processing pipeline with the settings that are current when Retry is selected. **Retry Last Transcription** pastes into the previously focused app and keeps the text on the clipboard; retrying from History updates that History entry and exposes Copy without auto-pasting into the History window.
+
 ## Install
 
 ### Option A: packaged release
 
 After the first public release exists, download the DMG and matching `.sha256` file from the [latest FlowType release](https://github.com/jdlinventures/flowtype-macos/releases/latest). Verify the checksum, open the DMG, and drag FlowType onto the Applications shortcut.
 
-Because the app is not notarized, first launch requires the one-time **Open Anyway** flow under **System Settings → Privacy & Security**. Then select **Install Offline Model** in FlowType Settings. FlowType downloads the pinned ~488 MB English model once, verifies it, and keeps it for future app updates. Follow [INSTALL_FOR_FRIENDS.md](docs/INSTALL_FOR_FRIENDS.md) for the exact safe steps, permission setup, and a real dictation test.
+Because the app is not notarized, first launch requires the one-time **Open Anyway** flow under **System Settings → Privacy & Security**. Then choose Medium English (recommended, 1.53 GB) or Small English (faster, 488 MB) and select **Install** in FlowType Settings. FlowType verifies the model and keeps it for future app updates. Follow [INSTALL_FOR_FRIENDS.md](docs/INSTALL_FOR_FRIENDS.md) for the exact safe steps, permission setup, and a real dictation test.
 
 ### Option B: build from source
 
@@ -85,13 +90,13 @@ The build is ad-hoc signed for local use. It is not notarized. Do not disable Ga
 
 The packaged app already contains its own universal `whisper-cli`; no Homebrew, CMake, or Terminal setup is needed. In FlowType Settings:
 
-1. Select **Install Offline Model**.
-2. Leave FlowType open while the ~488 MB download completes.
+1. Choose **Recommended — Medium English** for accuracy or **Fast — Small English** for a smaller download.
+2. Select the Install button and leave FlowType open while the download completes.
 3. Wait for **installed and verified** before dictating.
 
-The download is pinned to an immutable model revision. FlowType verifies the exact 487,614,201-byte size and SHA-256 digest before moving it into place. A cancelled, truncated, or corrupted download cannot replace a working model.
+Both downloads are pinned to an immutable model revision. FlowType verifies the exact byte size and SHA-256 digest before moving either model into place. A cancelled, truncated, or corrupted download cannot replace a working model.
 
-The model is stored at `~/Library/Application Support/FlowType/models/ggml-small.en.bin`, outside the app bundle. Replacing FlowType during an update therefore preserves the model and keeps later app downloads under 10 MB. Advanced users can still select a different compatible GGML model or custom `whisper-cli` under **Transcription**.
+Models are stored under `~/Library/Application Support/FlowType/models/`, outside the app bundle. Replacing FlowType during an update therefore preserves them and keeps later app downloads small. Advanced users can still select another compatible GGML model or custom `whisper-cli` under **Transcription**.
 
 ## Required macOS permissions
 
@@ -123,7 +128,9 @@ Advanced users can still open and reload these files from the menu-bar menu. Mis
 
 ### Current model and cost
 
-The default setup uses the bundled `whisper.cpp` 1.9.1 engine with `ggml-small.en.bin`. That model runs entirely on this Mac and costs **$0 per dictation**; recorded audio does not leave the device. The app is about 10 MB, while the separately downloaded model is 487,614,201 bytes (about 488 MB in decimal units).
+New installs recommend the bundled `whisper.cpp` 1.9.1 engine with `ggml-medium.en.bin` for better accuracy. Medium is 1,533,774,781 bytes; Small English remains available at 487,614,201 bytes for faster transcription and a smaller download. Both run entirely on this Mac and cost **$0 per dictation**; recorded audio does not leave the device.
+
+Retrying with the local provider also costs $0. A retry with OpenAI or Groq sends the retained recording again and creates another billable transcription request. If cloud cleanup is enabled, it creates another cleanup request too.
 
 OpenAI and Groq are optional alternatives. If you select either cloud transcription provider and add its key to `.env`, audio is sent to that provider and usage is billed to the account that owns the key. FlowType itself has no subscription or account system.
 
@@ -177,19 +184,18 @@ FlowType observes shortcuts with a listen-only event monitor, so the key event s
 
 The General tab lists the input devices currently exposed by macOS and includes the local audio controls:
 
-- **Automatic — System Default** is the safe default. FlowType checks the macOS default again at the start of every recording, so connecting AirPods and selecting them in Control Center is enough.
-- Choose a named device to make FlowType prefer that microphone without changing the Mac's global input setting.
-- If a preferred device is disconnected, FlowType labels it unavailable in Settings and safely falls back to the current system default for that recording.
+- **Automatic — System Default** re-evaluates the route before every recording. If Bluetooth headphones are the current output and their Bluetooth microphone is also the default input, FlowType uses the built-in Mac microphone by default. This preserves clearer headphone playback and gives speech recognition a stronger signal.
+- Choose a named device to use that exact microphone without changing the Mac's global input setting. FlowType warns when an explicitly selected Bluetooth microphone may reduce playback and recognition quality.
+- If an explicitly selected device is disconnected, FlowType stops with a clear error instead of silently recording from the wrong microphone.
+- **Test for 3 seconds** proves that the selected route is delivering frames and shows the live level before a real dictation.
 
-- **Start/stop sounds** play short macOS sounds when the microphone starts and stops.
-- **Voice clarity** optionally enables Apple's voice processing and automatic gain control, which raises quieter speech and reduces non-speech interference. Normal microphone capture is the reliable default.
-- **Lower other audio** is independent from microphone processing. FlowType remembers the current output device and its exact volume, then applies a relative level while listening: Light keeps 65%, Medium keeps 35%, and Strong keeps 15%.
+- **Start/stop sounds** play the same macOS Pop sound when the microphone starts and stops. Retries do not play recording-boundary sounds.
+- **Boost quiet speech** applies at most 4× gain after capture. Healthy speech is left unchanged, and near-silent audio is rejected rather than amplified into a hallucination.
+- **Lower other audio** is independent from microphone processing. FlowType remembers the current output device and its exact volume, then applies a relative level while listening: Light keeps 65%, Medium keeps 35%, and Strong keeps 15%. It uses macOS's virtual main-volume control so Bluetooth devices map to their real master or stereo-channel volume, and it verifies the written value before reporting success.
 
 FlowType restores the previous output volume after normal stop, `Esc`, disabling dictation, opening Settings, or quitting. Before lowering anything it writes a small recovery record under Application Support; the next launch restores that volume if the prior process crashed. Outputs without a writable macOS volume control, such as some HDMI and USB devices, are skipped without interrupting dictation. If the output device changes mid-recording, FlowType restores the original device by its stable Core Audio UID when that device is available.
 
-Voice processing is available on macOS 13 and later. If the selected microphone or virtual audio device rejects it or exposes an unsafe multichannel stream, FlowType automatically retries with ordinary recording rather than risking a silent dictation.
-
-The floating recording pill shows the microphone FlowType actually opened. AirPods only appear when they are connected and macOS exposes them as an input device; use **Refresh** in Settings after connecting or disconnecting audio hardware.
+The floating recording pill shows the microphone FlowType actually opened and a live input meter. AirPods only appear when connected and exposed as an input device; use **Refresh** after audio hardware changes.
 
 ### Transcription provider
 
@@ -200,7 +206,7 @@ Local, fully offline transcription is the default:
   "transcription": {
     "provider": "local",
     "localExecutable": "bundled",
-    "localModelPath": "~/Library/Application Support/FlowType/models/ggml-small.en.bin",
+    "localModelPath": "~/Library/Application Support/FlowType/models/ggml-medium.en.bin",
     "language": "en"
   }
 }
@@ -336,17 +342,20 @@ Turn the setting off to make update checks manual-only. The menu-bar **Check for
 - [VoiceInk](https://tryvoiceink.com/docs/introduction) shows the value of global push-to-talk, personal vocabulary, deterministic replacements, and recovery actions in a local-first tool.
 - [MacWhisper](https://docs.macwhisper.com/article/16-global) validates the smaller global overlay plus automatic clipboard workflow.
 
-FlowType intentionally does not copy their account systems, transcript history, per-app modes, screen-context reading, or command modes. Its update check is deliberately a small GitHub release notification rather than an executable self-updater.
+FlowType intentionally does not copy their account systems, indefinite archives, search/export systems, per-app modes, screen-context reading, or command modes. Its update check is deliberately a small GitHub release notification rather than an executable self-updater.
 
 ## Privacy and data lifecycle
 
 - There is no telemetry or account layer.
-- Temporary audio lives in the macOS temporary directory and is deleted after success, failure, or cancellation.
+- Finalized dictations are stored for three days under `~/Library/Application Support/FlowType/recordings/`; expiry is based on the original capture time and a retry does not extend it.
+- Recording directories use owner-only `0700` permissions and metadata/audio files use `0600`. Protection relies on the macOS user account and FileVault when enabled; OS, enterprise, or user backup tools may still include Application Support.
+- FlowType does not initiate cloud sync for History. Cancelling a new capture deletes it; interrupting finalized processing preserves usable audio for retry.
 - Local transcription never sends audio off-device.
 - Dictionary and configuration files remain in the user's Application Support directory. Vocabulary terms are included in recognition/cleanup prompts, so those terms are sent to the selected provider when a cloud stage is enabled.
 - During active music lowering, a small local recovery file stores the output device identifier and prior volume. It is deleted after successful restoration.
 - LLM cleanup sends transcript text only when a cloud cleanup endpoint is enabled.
 - OpenAI/Groq transcription sends the audio to the selected provider; their API data terms apply.
+- Retrying with OpenAI or Groq sends the retained audio to that provider again. History metadata never stores API keys or `.env` values.
 - If automatic update checks are enabled, FlowType makes an unauthenticated HTTPS request to GitHub's public latest-release endpoint at most once every 24 hours. It sends no FlowType account, transcript, audio, dictionary, or device identifier. GitHub still receives ordinary network metadata such as the request IP address.
 
 ## Development and verification
@@ -355,6 +364,13 @@ Run the deterministic state-machine and dictionary tests:
 
 ```bash
 ./scripts/test-direct.sh
+```
+
+List microphones or perform a three-second capture-path diagnostic without launching the app:
+
+```bash
+./scripts/test-audio-capture.sh list
+./scripts/test-audio-capture.sh system_default
 ```
 
 Build and validate the app bundle:
@@ -380,10 +396,11 @@ A standard `Package.swift` and XCTest suite are also included for development in
 ## Current boundaries
 
 - Transcription starts after release; there is no partial streaming transcript yet.
-- The engine is included, but the ~488 MB model is a user-initiated first-run download. The first local dictation cannot work until that one download finishes.
+- The engine and small VAD model are included, but the selected 488 MB or 1.53 GB speech model is a user-initiated first-run download. The first local dictation cannot work until it finishes.
 - Settings covers normal configuration; the cleanup prompt and fine-grained timing values remain advanced `config.json` options.
 - The community build is ad-hoc signed rather than Developer ID signed or notarized. Gatekeeper approval and occasional privacy-permission refreshes are an unavoidable distribution limitation.
 - Update checks notify and open the selected GitHub release page; the user replaces the app manually. There is intentionally no silent executable self-updater.
+- Recording History is deliberately a three-day recovery list with no search, export, bulk actions, account sync, or indefinite retention.
 - Device-level verification still requires a real microphone, macOS privacy grants, a focused third-party text field, and either a local model or provider key.
 
 ## License

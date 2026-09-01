@@ -8,7 +8,7 @@ FlowType is a menu-bar dictation app for macOS 13 or later. Its default speech-t
 
 ```text
 microphone
-  → temporary recording
+  → private three-day recovery recording
   → local whisper.cpp model
   → optional text cleanup
   → clipboard
@@ -94,8 +94,8 @@ The app already contains a self-contained `whisper.cpp` engine for Apple silicon
 In the Settings window that opens on first launch:
 
 1. Find **Offline transcription** at the top of General.
-2. Select **Install Offline Model**.
-3. Leave FlowType open while the ~488 MB download completes.
+2. Choose **Recommended — Medium English (1.53 GB)** for accuracy, or **Fast — Small English (488 MB)** for a lighter download.
+3. Select the Install button and leave FlowType open while the download completes.
 4. Wait until the status says **installed and verified**.
 
 That is the entire local speech-recognition setup. The download button also acts as the owner's consent to fetch the model from the official whisper.cpp model repository.
@@ -103,9 +103,9 @@ That is the entire local speech-recognition setup. The download button also acts
 ### What FlowType protects during the download
 
 - The source URL is pinned to a specific repository revision rather than a moving `main` link.
-- The expected file is exactly 487,614,201 bytes.
-- Its expected SHA-256 is `c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d`.
-- Verification streams the file in chunks rather than loading ~488 MB into memory.
+- Small English is exactly 487,614,201 bytes with SHA-256 `c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d`.
+- Medium English is exactly 1,533,774,781 bytes with SHA-256 `cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356`.
+- Verification streams the selected file in chunks rather than loading the whole model into memory.
 - The final model path is replaced only after both checks pass.
 - Cancel, Retry, Reinstall, and Remove are available in the same Settings section.
 - A failed or cancelled download cannot replace a previously working model.
@@ -113,7 +113,7 @@ That is the entire local speech-recognition setup. The download button also acts
 The verified model is stored here:
 
 ```text
-~/Library/Application Support/FlowType/models/ggml-small.en.bin
+~/Library/Application Support/FlowType/models/
 ```
 
 Do not delete the Application Support folder during an app upgrade. The model, settings, personal dictionary, and optional API keys all live there and survive replacing `FlowType.app`.
@@ -134,16 +134,21 @@ These approvals belong to the Mac owner. An installation agent can open the corr
 
 Do not consider the installation complete based only on a successful build.
 
-1. Open TextEdit and create a plain text document.
-2. Click into the document so the cursor is visible.
-3. Quickly tap **Right Option**.
-4. Confirm the floating pill says hands-free recording is active.
-5. Say: “FlowType is working on this Mac.”
-6. Tap **Right Option** again.
-7. Wait for transcription and automatic paste.
-8. Press Cmd-V once more to confirm the transcript stayed on the clipboard.
-9. Hold **Right Option**, speak a second sentence, and release it to test push to talk.
-10. Start once more and press Escape to confirm cancellation pastes nothing.
+1. In FlowType General Settings, leave the microphone on **Automatic** and select **Test for 3 seconds**.
+2. Speak normally and confirm the meter moves and the test reports a healthy signal.
+3. Open TextEdit and create a plain text document.
+4. Click into the document so the cursor is visible.
+5. Quickly tap **Right Option**.
+6. Confirm the floating pill says hands-free recording is active, names the active microphone, and shows a moving level.
+7. Say: “FlowType is working on this Mac.”
+8. Tap **Right Option** again.
+9. Wait for transcription and automatic paste.
+10. Press Cmd-V once more to confirm the transcript stayed on the clipboard.
+11. Hold **Right Option**, speak a second sentence, and release it to test push to talk.
+12. Start once more and press Escape to confirm cancellation pastes nothing.
+13. Confirm the floating pill disappears completely after its brief success state.
+
+The start and stop boundaries use the same Pop sound. The menu bar also includes **Retry Last Transcription** and **Recording History…**. Retry Last uses the settings currently selected, pastes into the prior app, and keeps the recovered text on the clipboard. A retry started inside History updates that entry and enables Copy without auto-pasting into the History window.
 
 If music lowering is enabled, play audio quietly during one test and confirm the original volume returns after recording ends.
 
@@ -154,6 +159,7 @@ Open Settings from the waveform icon in the menu bar.
 - **General** controls the hotkeys, microphone, sounds, music lowering, clipboard behavior, and update checks.
 - **Transcription** selects local, OpenAI, or Groq transcription and optional cleanup.
 - **Dictionary** adds vocabulary hints and exact spelling replacements.
+- **Recording History…** opens the on-demand three-day recovery list with playback, retranscribe, copy, and one-entry delete.
 
 The default hybrid Right Option behavior is:
 
@@ -168,9 +174,12 @@ User files are stored here and survive app replacement:
 ~/Library/Application Support/FlowType/dictionary.txt
 ~/Library/Application Support/FlowType/.env
 ~/Library/Application Support/FlowType/models/
+~/Library/Application Support/FlowType/recordings/
 ```
 
 Never upload or commit `.env`. It may contain paid provider credentials.
+
+Finalized recordings remain only for three days from their original capture time; retry does not extend that deadline. FlowType makes the recordings directory owner-only (`0700`) and its metadata/audio owner-readable/writable (`0600`). It does not initiate History sync, although Time Machine, enterprise backup, or other OS/user backup software may still include Application Support. Local retries cost $0 and keep audio on the Mac. OpenAI/Groq retries send the recording again and create a new provider request; cloud cleanup can create another paid request too.
 
 ## How updates work
 
@@ -213,6 +222,7 @@ FlowType is a menu-bar utility and has no Dock icon. Look for the waveform icon 
 - If model setup failed, select **Retry Download**. FlowType will not install an unverified file.
 - Open FlowType's Transcription tab and verify the provider is **Local**.
 - If the status says the audio was too quiet, check the active microphone shown in the recording pill.
+- If a usable recording reached History, restore valid current settings and choose **Retry Last Transcription**. For a no-paste recovery, open **Recording History…**, select it, and choose **Retranscribe**; then use **Copy**.
 
 ### The transcript reaches the clipboard but is not pasted
 
@@ -220,7 +230,7 @@ Refresh FlowType under **System Settings → Privacy & Security → Accessibilit
 
 ### AirPods are connected but another microphone is used
 
-Select the AirPods input in Control Center and leave FlowType on **Automatic — System Default**, or select the named AirPods device in Settings and click Refresh.
+This is usually intentional. When AirPods are playing output and their microphone is also the system default, FlowType's Automatic mode uses the Mac microphone so the AirPods stay in clearer playback mode and speech recognition receives a better signal. Turn off **Use the Mac microphone when Bluetooth headphones are playing audio** only if you deliberately want the AirPods microphone, or explicitly select the named AirPods input. FlowType warns that this can reduce music quality and dictation accuracy.
 
 ### macOS says the app is damaged
 
@@ -259,6 +269,7 @@ An agent should report evidence for each item instead of saying only “installe
 - [ ] The app's ad-hoc signature passes `codesign --verify --deep --strict`.
 - [ ] The installed app contains a universal `Contents/Resources/Whisper/bin/whisper-cli` with no Homebrew library dependency.
 - [ ] FlowType reports the local model as installed and verified.
+- [ ] The three-second microphone test names the expected device and shows a healthy live signal.
 - [ ] The owner personally reviewed all three privacy grants.
 - [ ] Hands-free, push-to-talk, Escape cancellation, clipboard retention, and automatic paste were tested in a real field.
 - [ ] No `.env` value was printed, uploaded, committed, or copied into chat.

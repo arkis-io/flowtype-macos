@@ -18,6 +18,7 @@ struct GestureStateMachine {
         case doubleTapWindowExpired(at: TimeInterval)
         case autoStop
         case escape
+        case beginExternalProcessing
         case processingFinished
     }
 
@@ -91,6 +92,10 @@ struct GestureStateMachine {
         case (.processing, .processingFinished):
             phase = .idle
             return [.hide]
+
+        case (.idle, .beginExternalProcessing):
+            phase = .processing
+            return []
 
         default:
             return []

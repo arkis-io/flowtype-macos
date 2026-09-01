@@ -7,16 +7,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var coordinator: AppCoordinator?
     private var configStore: ConfigStore?
+    private var historyStore: RecordingHistoryStore?
     private var settingsWindowController: SettingsWindowController?
+    private var historyWindowController: RecordingHistoryWindowController?
     private var localModelManager: LocalModelManager?
     private var enabledMenuItem: NSMenuItem?
     private var statusMenuItem: NSMenuItem?
     private var launchAtLoginMenuItem: NSMenuItem?
     private var updatesMenuItem: NSMenuItem?
+    private var retryLastMenuItem: NSMenuItem?
+    private var historyMenuItem: NSMenuItem?
     private var updateChecker: ReleaseUpdateChecker?
     private var updateCheckTask: Task<Void, Never>?
     private var automaticUpdateCheckWorkItem: DispatchWorkItem?
     private var availableRelease: FlowTypeRelease?
+    private var retentionTimer: Timer?
     private let updatePill = PillWindowController()
 
     private static let lastUpdateCheckKey = "FlowTypeLastGitHubReleaseCheck"
@@ -27,9 +32,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             let configStore = try ConfigStore()
-            let coordinator = try AppCoordinator(configStore: configStore)
-            let modelManager = LocalModelManager(applicationSupportURL: configStore.applicationSupportURL)
+            let historyStore = try RecordingHistoryStore(rootURL: configStore.recordingsURL)
+            _ = try historyStore.reconcileInterruptedWork()
+            let coordinator = try AppCoordinator(
+                configStore: configStore,
+                historyStore: historyStore
+            )
+            let savedConfig = try configStore.load()
+            let selectedModel = LocalModelSpecification.matching(
+                path: savedConfig.transcription.localModelPath
+            ) ?? .mediumEnglish
+            let modelManager = LocalModelManager(
+                applicationSupportURL: configStore.applicationSupportURL,
+                specification: selectedModel
+            )
             self.configStore = configStore
+            self.historyStore = historyStore
             self.coordinator = coordinator
             self.localModelManager = modelManager
             let settingsWindowController = SettingsWindowController(
@@ -47,6 +65,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 coordinator?.retryEventMonitor()
             }
             self.settingsWindowController = settingsWindowController
+            let historyWindowController = RecordingHistoryWindowController(store: historyStore)
+            historyWindowController.onRetry = { [weak coordinator] id in
+                coordinator?.retryHistoryEntry(id: id)
+            }
+            historyWindowController.onEntriesChange = { [weak self] in
+                self?.updateRecoveryUI()
+                self?.scheduleNextRetentionPrune()
+            }
+            historyWindowController.activeEntryIDs = { [weak coordinator] in
+                coordinator?.activeEntryIDs ?? []
+            }
+            historyWindowController.isBusy = { [weak coordinator] in
+                coordinator?.isBusy ?? false
+            }
+            self.historyWindowController = historyWindowController
             configureStatusItem()
 
             coordinator.onStatusChange = { [weak self] status in
@@ -56,7 +89,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.enabledMenuItem?.state = enabled ? .on : .off
                 self?.updateStatusIcon(isActive: enabled)
             }
+            coordinator.onHistoryChange = { [weak self] in
+                self?.historyWindowController?.refresh()
+                self?.updateRecoveryUI()
+                self?.scheduleNextRetentionPrune()
+            }
+            coordinator.onBusyChange = { [weak self] _ in
+                self?.historyWindowController?.updateBusyState()
+                self?.updateRecoveryUI()
+            }
             coordinator.start()
+            updateRecoveryUI()
+            scheduleNextRetentionPrune()
             configureUpdateChecker()
             scheduleAutomaticUpdateCheck()
 
@@ -88,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         automaticUpdateCheckWorkItem?.cancel()
         updateCheckTask?.cancel()
+        retentionTimer?.invalidate()
         updatePill.hide()
         localModelManager?.cancelDownload()
         coordinator?.shutdown()
@@ -101,6 +146,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         menu.addItem(menuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
+        let history = menuItem(title: "Recording History…", action: #selector(openHistory))
+        menu.addItem(history)
+        historyMenuItem = history
+        let retryLast = menuItem(
+            title: "Retry Last Transcription",
+            action: #selector(retryLastTranscription)
+        )
+        retryLast.isEnabled = false
+        menu.addItem(retryLast)
+        retryLastMenuItem = retryLast
         menu.addItem(.separator())
 
         let enabled = NSMenuItem(title: "Dictation Enabled", action: #selector(toggleEnabled(_:)), keyEquivalent: "")
@@ -156,6 +211,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         showSettings()
+    }
+
+    @objc private func openHistory() {
+        historyWindowController?.showHistory()
+    }
+
+    @objc private func retryLastTranscription() {
+        coordinator?.retryLastTranscription()
     }
 
     @objc private func openConfig() {
@@ -331,12 +394,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 updatesMenuItem?.isEnabled = true
                 updatePill.show(
                     "FlowType \(release.version) available — use the menu bar",
-                    appearance: .update
+                    appearance: .update,
+                    autoHideAfter: 8
                 )
-                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
-                    guard self?.availableRelease?.version == release.version else { return }
-                    self?.updatePill.hide()
-                }
             } else {
                 resetUpdatesMenuItem()
             }
@@ -391,6 +451,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func resetUpdatesMenuItem() {
         updatesMenuItem?.title = "Check for Updates…"
         updatesMenuItem?.isEnabled = updateChecker != nil
+    }
+
+    private func updateRecoveryUI() {
+        guard let historyStore, let coordinator else {
+            retryLastMenuItem?.isEnabled = false
+            historyMenuItem?.isEnabled = false
+            return
+        }
+        historyMenuItem?.isEnabled = true
+        retryLastMenuItem?.isEnabled = !coordinator.isBusy
+            && (try? historyStore.newestRetryableEntry(activeIDs: coordinator.activeEntryIDs)) != nil
+    }
+
+    private func scheduleNextRetentionPrune() {
+        retentionTimer?.invalidate()
+        retentionTimer = nil
+        guard let historyStore, let coordinator else { return }
+        guard let expiry = try? historyStore.nextExpiryDate(activeIDs: coordinator.activeEntryIDs) else { return }
+        let interval = max(0.25, expiry.timeIntervalSinceNow)
+        retentionTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let historyStore = self.historyStore else { return }
+                _ = try? historyStore.prune(activeIDs: self.coordinator?.activeEntryIDs ?? [])
+                self.historyWindowController?.refresh()
+                self.updateRecoveryUI()
+                self.scheduleNextRetentionPrune()
+            }
+        }
     }
 
     private func presentMessage(title: String, message: String) {

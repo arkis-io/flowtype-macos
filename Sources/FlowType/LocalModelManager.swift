@@ -2,12 +2,36 @@ import CryptoKit
 import Foundation
 
 struct LocalModelSpecification: Equatable {
+    let identifier: String
+    let displayName: String
+    let downloadSizeLabel: String
     let filename: String
     let downloadURL: URL
     let expectedByteCount: Int64
     let expectedSHA256: String
 
+    init(
+        identifier: String = "custom",
+        displayName: String = "Custom model",
+        downloadSizeLabel: String = "",
+        filename: String,
+        downloadURL: URL,
+        expectedByteCount: Int64,
+        expectedSHA256: String
+    ) {
+        self.identifier = identifier
+        self.displayName = displayName
+        self.downloadSizeLabel = downloadSizeLabel
+        self.filename = filename
+        self.downloadURL = downloadURL
+        self.expectedByteCount = expectedByteCount
+        self.expectedSHA256 = expectedSHA256
+    }
+
     static let smallEnglish = LocalModelSpecification(
+        identifier: "small_en",
+        displayName: "Fast — Small English",
+        downloadSizeLabel: "488 MB",
         filename: "ggml-small.en.bin",
         downloadURL: URL(
             string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/c521a4b02f422512d734391fdf08bb08c0862f68/ggml-small.en.bin"
@@ -15,6 +39,25 @@ struct LocalModelSpecification: Equatable {
         expectedByteCount: 487_614_201,
         expectedSHA256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
     )
+
+    static let mediumEnglish = LocalModelSpecification(
+        identifier: "medium_en",
+        displayName: "Recommended — Medium English",
+        downloadSizeLabel: "1.53 GB",
+        filename: "ggml-medium.en.bin",
+        downloadURL: URL(
+            string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/c521a4b02f422512d734391fdf08bb08c0862f68/ggml-medium.en.bin"
+        )!,
+        expectedByteCount: 1_533_774_781,
+        expectedSHA256: "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356"
+    )
+
+    static let supported: [LocalModelSpecification] = [.mediumEnglish, .smallEnglish]
+
+    static func matching(path: String) -> LocalModelSpecification? {
+        let filename = URL(fileURLWithPath: path.expandingTildeInPath).lastPathComponent
+        return supported.first { $0.filename == filename }
+    }
 }
 
 enum LocalModelState: Equatable {
@@ -100,8 +143,11 @@ enum LocalModelFileVerifier {
 
 @MainActor
 final class LocalModelManager {
-    let specification: LocalModelSpecification
-    let modelURL: URL
+    private(set) var specification: LocalModelSpecification
+
+    var modelURL: URL {
+        modelsDirectoryURL.appendingPathComponent(specification.filename)
+    }
 
     var onStateChange: ((LocalModelState) -> Void)?
     private(set) var state: LocalModelState = .notInstalled {
@@ -117,17 +163,30 @@ final class LocalModelManager {
 
     init(
         applicationSupportURL: URL,
-        specification: LocalModelSpecification = .smallEnglish,
+        specification: LocalModelSpecification = .mediumEnglish,
         session: URLSession = .shared
     ) {
         self.specification = specification
         self.session = session
         modelsDirectoryURL = applicationSupportURL.appendingPathComponent("models", isDirectory: true)
-        modelURL = modelsDirectoryURL.appendingPathComponent(specification.filename)
     }
 
     var isInstalled: Bool {
         FileManager.default.fileExists(atPath: modelURL.path)
+    }
+
+    func select(_ specification: LocalModelSpecification) {
+        guard self.specification != specification else { return }
+        operationID = UUID()
+        downloadTask?.cancel()
+        downloadTask = nil
+        stopProgressTimer()
+        if let activeStagingURL {
+            try? FileManager.default.removeItem(at: activeStagingURL)
+        }
+        activeStagingURL = nil
+        self.specification = specification
+        refresh()
     }
 
     func refresh() {

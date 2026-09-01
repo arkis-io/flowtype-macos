@@ -28,7 +28,7 @@ final class TranscriptionService {
                 apiKey: key,
                 model: config.openAIModel,
                 language: config.language,
-                prompt: dictionary.recognitionPrompt
+                dictionary: dictionary
             )
         case "groq":
             guard let key = nonEmpty(environment["GROQ_API_KEY"]) else {
@@ -40,7 +40,7 @@ final class TranscriptionService {
                 apiKey: key,
                 model: config.groqModel,
                 language: config.language,
-                prompt: dictionary.recognitionPrompt
+                dictionary: dictionary
             )
         default:
             throw FlowTypeError.configuration("Unknown transcription provider '\(config.provider)'. Use local, openai, or groq.")
@@ -67,6 +67,8 @@ final class TranscriptionService {
         }
 
         let outputBase = audioURL.deletingPathExtension().appendingPathExtension("transcript")
+        let outputURL = URL(fileURLWithPath: outputBase.path + ".txt")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
         var arguments = [
             "-m", modelPath,
             "-f", audioURL.path,
@@ -76,6 +78,14 @@ final class TranscriptionService {
             "-nt",
             "-np"
         ]
+        if let vadModelPath = bundledVADModelPath() {
+            arguments.append(contentsOf: [
+                "--vad",
+                "--vad-model", vadModelPath,
+                "--vad-min-speech-duration-ms", "180",
+                "--vad-speech-pad-ms", "120"
+            ])
+        }
         if let prompt = dictionary.recognitionPrompt {
             arguments.append(contentsOf: ["--prompt", String(prompt.prefix(1_000))])
         }
@@ -86,14 +96,13 @@ final class TranscriptionService {
         )
         try Task.checkCancellation()
 
-        let outputURL = URL(fileURLWithPath: outputBase.path + ".txt")
         guard result.terminationStatus == 0,
               let text = try? String(contentsOf: outputURL, encoding: .utf8) else {
             throw FlowTypeError.transcription(
                 "Local transcription failed: \(whisperFailureDetails(from: result))"
             )
         }
-        return try normalizedTranscript(text)
+        return try normalizedTranscript(text, dictionary: dictionary)
     }
 
     private func transcribeWithAPI(
@@ -102,14 +111,14 @@ final class TranscriptionService {
         apiKey: String,
         model: String,
         language: String,
-        prompt: String?
+        dictionary: PersonalDictionary
     ) async throws -> String {
         let boundary = "FlowType-\(UUID().uuidString)"
         var body = MultipartFormData(boundary: boundary)
         body.addField(name: "model", value: model)
         body.addField(name: "language", value: language)
         body.addField(name: "response_format", value: "json")
-        if let prompt {
+        if let prompt = dictionary.recognitionPrompt {
             body.addField(name: "prompt", value: prompt)
         }
         body.addFile(
@@ -137,7 +146,7 @@ final class TranscriptionService {
               let text = object["text"] as? String else {
             throw FlowTypeError.transcription("The transcription provider returned a response without a text field.")
         }
-        return try normalizedTranscript(text)
+        return try normalizedTranscript(text, dictionary: dictionary)
     }
 
     func resolveWhisperExecutable(_ configuredPath: String) -> String {
@@ -162,10 +171,26 @@ final class TranscriptionService {
         return normalized.lowercased() == "bundled" ? bundled : expanded
     }
 
-    private func normalizedTranscript(_ text: String) throws -> String {
+    private func bundledVADModelPath() -> String? {
+        guard let path = bundle.resourceURL?
+            .appendingPathComponent("Whisper/models/ggml-silero-v6.2.0.bin")
+            .path,
+            FileManager.default.fileExists(atPath: path) else { return nil }
+        return path
+    }
+
+    private func normalizedTranscript(_ text: String, dictionary: PersonalDictionary) throws -> String {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else {
             throw FlowTypeError.transcription("No speech was detected in the recording.")
+        }
+        guard !TranscriptQuality.isOnlyNonSpeechMarkers(normalized) else {
+            throw FlowTypeError.transcription("No intelligible speech was detected in the recording.")
+        }
+        guard !dictionary.isRecognitionPromptEcho(normalized) else {
+            throw FlowTypeError.transcription(
+                "No speech was detected. FlowType discarded a dictionary-hint echo instead of pasting it."
+            )
         }
         return normalized
     }

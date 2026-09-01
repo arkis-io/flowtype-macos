@@ -25,6 +25,8 @@ struct AppConfig: Codable, Equatable {
         audio: AudioConfig(
             feedbackSoundsEnabled: true,
             voiceProcessingEnabled: false,
+            boostQuietSpeechEnabled: true,
+            preferBuiltInMicWithBluetoothOutput: true,
             lowerOtherAudioEnabled: true,
             duckingLevel: "mid",
             inputDeviceUID: "system_default",
@@ -34,7 +36,7 @@ struct AppConfig: Codable, Equatable {
             provider: "local",
             language: "en",
             localExecutable: "bundled",
-            localModelPath: "~/Library/Application Support/FlowType/models/ggml-small.en.bin",
+            localModelPath: "~/Library/Application Support/FlowType/models/ggml-medium.en.bin",
             openAIModel: "whisper-1",
             groqModel: "whisper-large-v3-turbo"
         ),
@@ -79,7 +81,11 @@ struct GestureConfig: Codable, Equatable {
 
 struct AudioConfig: Codable, Equatable {
     var feedbackSoundsEnabled: Bool
+    // Retained so older config files remain readable. The former AVAudioEngine
+    // voice-processing path is no longer used by the capture engine.
     var voiceProcessingEnabled: Bool
+    var boostQuietSpeechEnabled: Bool
+    var preferBuiltInMicWithBluetoothOutput: Bool
     var lowerOtherAudioEnabled: Bool
     var duckingLevel: String
     var inputDeviceUID: String

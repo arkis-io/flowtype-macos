@@ -1,159 +1,189 @@
 # FlowType Handoff
 
-Last verified: 2026-08-28 (Asia/Bangkok)
+Last verified: 2026-09-01 (Asia/Bangkok)
 
 ## Current state
 
-FlowType **0.7.0** (build **12**) is a verified universal release candidate in `dist/`. The currently installed daily-use app remains **0.5.0** (build **10**) at `/Applications/FlowType.app` and was still running as PID 1408 at the final check; this work deliberately did not replace it or churn its working privacy grants.
+FlowType 0.8 is implemented as one source release: improved microphone routing/capture, stronger local transcription safeguards, three-day recording recovery and retranscription, and the brand-aligned transient capsule.
 
-The GitHub repository is still private, `main` tracks `origin/main`, and there are no published releases. This handoff describes the complete local 0.7.0 implementation snapshot, including the prior 0.6.0 release-engineering work. No repository visibility change, push, tag, draft release, or public release action has been taken.
+The source release is committed on `main` and pushed to `origin/main`. The verified app is installed and running from `/Applications/FlowType.app`. No DMG containing the final brand pass has been published, no GitHub release has been created, and nothing has been deployed elsewhere.
 
-The universal release candidate contains both architectures:
-
-```text
-x86_64 arm64
-```
-
-The packaged candidate is `dist/FlowType-0.7.0-macos-universal.dmg` (5,853,268 bytes) with a matching portable `.sha256` file. Its SHA-256 is `f3856aa3e2b5327ebe651f900fb239db3685c622450af7db00d953cd895f8dcf`. Generated `dist/` artifacts remain ignored by Git.
-
-## Verified product behavior
-
-- Right Option is the hybrid shortcut: quick tap starts/stops hands-free recording; hold/release is push to talk.
-- Escape cancels recording or in-flight processing without swallowing Escape in the focused app.
-- Normal microphone capture is the reliable default. The current input preference is the macOS system default.
-- Local transcription now prefers the universal `whisper.cpp` 1.9.1 engine included inside FlowType. It falls back to a custom path or legacy Homebrew path only for backward compatibility.
-- General Settings has a first-run Model Manager with Install, progress, Cancel, Retry, Reinstall, and confirmed Remove controls for `ggml-small.en.bin` (487,614,201 bytes).
-- The model URL is pinned to an immutable Hugging Face revision. FlowType validates the exact size and SHA-256 `c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d`, and only then atomically replaces the final file.
-- The model stays under Application Support instead of the app. Friends do not need Homebrew, CMake, Terminal, an API key, or an account to use packaged local transcription; app updates preserve the model.
-- The result is copied to the clipboard and pasted with Cmd-V. Clipboard restoration is off, so the transcript remains available to paste again.
-- Music lowering is enabled at Medium. It independently reduces writable system output volume to 35% of the prior level and restores the exact prior level after stop, Escape, disabling dictation, opening Settings, quit, or next-launch crash recovery.
-- Voice processing/AGC is experimental and currently disabled.
-- Hands-free recording auto-stops after 300 seconds.
-- Automatic release checks are enabled by default and can be disabled in General Settings. The app checks GitHub at most once every 24 hours, shows a non-activating update pill, and offers Download, Later, or Skip. Download only opens the HTTPS GitHub release page; FlowType never installs an executable update silently.
-
-The prior 0.5.0 release-session manual QA used the physical Right Option key and confirmed recording, local transcription, clipboard insertion, and automatic paste. The volume trace showed `1.0 → 0.35 → 1.0`; the recovery file existed only while recording and was removed after restoration. The 0.7.0 candidate has compile/package/model-transcription verification but has not replaced the working installed app, so its new Settings controls still need normal fresh-install visual/manual QA before publication.
-
-## Architecture orientation
-
-The app is native Swift/AppKit with no third-party Swift dependencies.
+A local universal app was rebuilt and validated after the brand-aligned capsule redesign:
 
 ```text
-main.swift
-  → AppDelegate: app/menu/settings lifecycle
-  → AppCoordinator: owns the dictation session
-      → GlobalEventMonitor + GestureStateMachine
-      → AudioRecorder → AudioConverterService
-      → TranscriptionService (local, OpenAI, or Groq)
-      → CleanupService → PersonalDictionary
-      → TextInsertionService (pasteboard + Cmd-V)
-      → OutputVolumeDucker (independent music lowering + recovery)
-
-AppDelegate
-  → LocalModelManager
-      → pinned HTTPS download → size + streaming SHA-256 → atomic model install
-  → ReleaseUpdateChecker
-      → public GitHub latest-release API
-      → validated github.com release page
-      → non-activating pill + user-controlled menu prompt
+dist/FlowType.app
+Executable SHA-256: 4426d380f7715063fc8a45a805bc5db64ed532e0db4a6a5046fca923dea0b9a3
+Architectures: x86_64 arm64
 ```
 
-Important boundaries:
+The older `dist/FlowType-0.8.0-macos-universal.dmg` predates the brand-aligned capsule and was not repackaged. The installed executable SHA-256 is `4426d380f7715063fc8a45a805bc5db64ed532e0db4a6a5046fca923dea0b9a3`, exactly matching the redesigned `dist/FlowType.app`. The installed bundle passed deep strict signature and plist validation, launched from `/Applications`, remained running after the smoke check, and created `recordings/` plus `.staging/` with `0700` permissions.
 
-- `GlobalEventMonitor` passes the original `CGEvent` timestamp into `GestureStateMachine`. Do not replace it with delayed main-thread time; microphone startup can otherwise misclassify a quick tap as a hold.
-- `AudioRecorder` rejects unsafe multichannel voice-processing streams and falls back to normal capture. `AudioSignalQuality` stops near-digital silence before Whisper can hallucinate text.
-- `OutputVolumeDucker` is deliberately separate from microphone processing. It writes `output-volume-recovery.json` before lowering anything and restores by stable Core Audio device UID.
-- `ConfigStore` merges saved configuration over `AppConfig.defaultConfig`, so newly added fields remain backward compatible with older user config files.
-- `LocalModelManager` writes only inside `~/Library/Application Support/FlowType/models/`. A download remains a staging file until verification succeeds, so a corrupt/cancelled replacement cannot damage the current model.
-- `TranscriptionService` checks an explicit custom executable first, then the bundled engine, then legacy Homebrew paths. New configs use `localExecutable: "bundled"`.
-- Update checking is intentionally outside `AppCoordinator`; it cannot mutate an active microphone/dictation session. `UpdateChecker.swift` contains the testable network/version logic, while `AppDelegate` owns the user-facing choice.
-
-## Validation evidence
-
-Fresh checks run before this handoff:
-
-```bash
-./scripts/test-direct.sh
-FLOWTYPE_ARCHS=universal ./scripts/build-app.sh
-./scripts/package-release.sh
-codesign --verify --deep --strict --verbose=2 dist/FlowType.app
-plutil -lint dist/FlowType.app/Contents/Info.plist
-(cd dist && shasum -a 256 -c FlowType-0.7.0-macos-universal.dmg.sha256)
-```
-
-Results:
-
-- 56 direct checks passed. New coverage pins the model metadata, accepts the correct checksum, rejects a corrupt checksum, proves a bad staging file cannot replace a working model, and proves a verified file can replace it atomically.
-- Native and universal app builds succeeded with warnings treated as errors.
-- The pinned whisper.cpp build produced a 6.6 MB static universal `whisper-cli`. `otool -L` showed only `/System/Library` frameworks and `/usr/lib` libraries—no Homebrew, `/usr/local`, or `@rpath` dependency.
-- The candidate app's ad-hoc signature was valid.
-- Candidate `Info.plist` passed validation.
-- The DMG checksum passed.
-- A read-only mounted DMG contained `FlowType.app`, the Applications shortcut, `READ ME FIRST.md`, `LICENSE.txt`, `THIRD PARTY NOTICES.md`, and four upstream license texts. The same notices are inside the app bundle.
-- The mounted app contained valid `x86_64` and `arm64` slices and passed deep strict code-signature verification.
-- No `ggml-*.bin` model was present in the mounted app. The packaged engine successfully loaded the existing verified Application Support model and transcribed the bundled JFK sample to: “And so, my fellow Americans, ask not what your country can do for you. Ask what you can do for your country.”
-- The mounted volume was ejected after verification.
-- The release candidate was not installed, so the already-working 0.5.0 hotkey/microphone/paste setup was not disturbed.
-
-Use `./scripts/test-direct.sh` as the verified test path in this environment.
-
-## Local paths and data
-
-User-controlled files are outside Git:
+The previous installed app is recoverable at:
 
 ```text
-~/Library/Application Support/FlowType/config.json
-~/Library/Application Support/FlowType/dictionary.txt
-~/Library/Application Support/FlowType/.env
-~/Library/Application Support/FlowType/models/ggml-small.en.bin
+.build/backups/FlowType-before-history-retry-20260901.app
+.build/backups/FlowType-before-morphing-capsule-20260901-1555.app
+.build/backups/FlowType-before-brand-aligned-capsule-20260901.app
 ```
 
-Temporary recordings are created under the macOS temporary directory and removed after success, failure, or cancellation. `.env`, `.build/`, and `dist/` are ignored by Git.
+## What changed
 
-## macOS permission caveat
+### Three-day recording recovery
 
-Development builds are ad-hoc signed. Replacing the installed app can leave a stale Input Monitoring binding even when FlowType's preflight UI reports `allowed`. The observed symptom is that physical Right Option events appear in a separate event trace while FlowType stays `Ready`.
-
-After installing a newly rebuilt development app:
-
-1. Open System Settings → Privacy & Security → Input Monitoring.
-2. Toggle FlowType off and back on.
-3. Quit and reopen FlowType.
-4. Confirm the physical Right Option key starts recording before diagnosing hotkey code.
-5. Re-check Microphone and Accessibility if recording or paste still fails.
-
-The project owner does not plan to purchase Apple Developer Program membership. Community releases therefore remain ad-hoc signed and not notarized. Friend installations must use the documented per-app Open Anyway flow; routine replacements may still require refreshing Input Monitoring or Accessibility.
-
-## Known limitations
-
-- Experimental voice processing remains off because the tested macOS path exposed 7/9-channel near-silent audio. Do not reconnect music lowering to this path.
-- Output devices without writable Core Audio master volume, including some HDMI/USB devices, safely skip music lowering.
-- Local `small.en` prioritizes speed and privacy over maximum accuracy. A medium model is supported by configuration but uses more memory and time.
-- A new packaged install needs one user-initiated ~488 MB network download before local transcription works. After verification, local transcription is offline and costs $0 per dictation.
-- There is no executable self-updater, transcript history, account system, or FlowType telemetry. Update checking is notification-only and contacts GitHub when enabled.
-- The app is ad-hoc signed and not notarized. Gatekeeper friction cannot legitimately be removed without Developer ID membership.
-- The latest-release check returns unavailable while the repository is private or has no published release. This is handled silently for automatic checks and explained for manual checks.
-- Universal structure is verified on Apple Silicon; actual Intel runtime behavior remains untested without an Intel Mac.
-- The repository has an MIT License with `Copyright (c) 2026 jdlinventures`. FlowType, whisper.cpp, OpenAI Whisper, miniaudio, and stb_vorbis notices are copied into the app bundle and DMG.
-
-## Rollback
-
-The immediately previous installed app is recoverable from:
+Finalized dictations are now captured into private staging under:
 
 ```text
-~/.Trash/FlowType-0.4.4-before-0.5.0.app
+~/Library/Application Support/FlowType/recordings/.staging/<UUID>/
 ```
 
-Earlier development backups also remain in Trash. Do not delete them without explicit approval.
+A readable nonempty capture is promoted before conversion/transcription into:
 
-## Next recommended work
+```text
+~/Library/Application Support/FlowType/recordings/<UUID>/
+  metadata.json
+  recording.caf OR recording.wav
+```
 
-Current daily use needs no installed-app change. The next release steps are intentionally separate:
+Metadata schema version 1 records the immutable entry/capture identity and original capture time, duration, status/stage, immutable first and mutable latest error, raw/final transcript, original/latest provider, attempt count/time, and audio availability. It stores no provider keys, environment values, or arbitrary paths.
 
-1. Review the local 0.7.0 implementation commit and its validation evidence.
-2. Audit reachable Git history for secrets/private material.
-3. Explicitly approve pushing `main` to `origin/main`.
-4. Explicitly approve changing repository visibility to public.
-5. Create and inspect a GitHub draft release using `docs/RELEASING.md`.
-6. Explicitly approve publishing the release.
-7. Test the public latest-release endpoint and upgrade flow from an older installed build.
-8. Have the friend follow `docs/INSTALL_FOR_FRIENDS.md` and report real hotkey/paste evidence.
+Entries expire three days after the original capture time. Retry does not extend expiry. Launch reconciliation recovers valid stale staging as interrupted, removes incomplete staging, and changes stale visible processing entries to failed/interrupted. Reads/writes and a one-shot next-expiry timer prune inactive expired entries.
+
+Recording directories use POSIX `0700`; metadata/audio files use `0600`. FlowType initiates no History sync. Account/FileVault protection applies when enabled, but Time Machine, enterprise backup, and other OS/user backup software may still include Application Support. App-level encryption was not added.
+
+### One correlated processing pipeline
+
+`AppCoordinator` now correlates each asynchronous attempt by both attempt UUID and retained-entry UUID. One pipeline owns CAF conversion/canonicalization, current-settings transcription, cleanup, dictionary replacement, transcript persistence, and origin-specific delivery.
+
+- Initial valid audio is durable before later processing begins.
+- Successful conversion retains the exact returned canonical WAV and removes the source/intermediate files.
+- Conversion failure retains a readable CAF when possible.
+- Missing, empty, near-silent, malformed, symlinked, expired, deleted, or explicitly unusable audio is not retryable.
+- Local Whisper `*.transcript.txt` output is removed after success, failure, or cancellation; versioned metadata is the only transcript persistence.
+- Late output checks both IDs before metadata, UI, clipboard, or paste changes.
+
+Cancellation is intentional rather than blanket cleanup:
+
+- Escape during a new capture or initial attempt deletes that new entry.
+- Escape during a retry retains the older audio and any prior transcript.
+- Disabling dictation, opening Settings, or quitting deletes unfinished capture, but retains already-finalized processing as interrupted/retryable.
+- Staging left by a lifecycle interruption is reconciled on the next launch.
+
+### Retry Last and Recording History
+
+The menu bar now includes:
+
+- **Retry Last Transcription** — selects the newest eligible retained recording, uses current transcription/cleanup/dictionary/environment settings, pastes into the previously focused app, and keeps recovered text on the clipboard.
+- **Recording History…** — opens an on-demand newest-first native window. It shows time, duration, status/stage, attempts, provider history, first/latest errors, transcript, expiry, playback progress, Retranscribe, Copy, and confirmed one-entry Delete.
+
+History retry uses current settings and updates the same UUID, but never synthesizes paste because opening History activates FlowType. The completed transcript is exposed through Copy. Retry is single-flight and unavailable while capture/processing is active or when audio is expired/missing/unusable.
+
+### Feedback and pill
+
+- The exact macOS `/System/Library/Sounds/Pop.aiff` sound at volume `0.32` is used for both recording start and stop. Retry plays no recording-boundary tone.
+- The feedback surface is now a borderless deep-navy glass capsule inside a larger transparent, nonactivating, click-through, bottom-center, all-spaces `NSPanel` canvas.
+- The visible capsule morphs from a 46-point accent orb into a content-sized 132–318-point surface and collapses back into the orb before ordering out. State changes animate both width and content opacity.
+- Window-level shadow and explicit border were removed. The capsule owns a continuous-corner, shape-following navy shadow plus restrained cyan/pearl/coral internal illumination, eliminating the previous rectangular halo/double outline.
+- A slow internal light reflection traverses the capsule when motion is enabled; Reduce Motion removes it.
+- Recording text is split into a primary state and smaller microphone/routing detail. Three flowing cyan/pearl/coral ribbons echo the logo's three tails, respond to live input, and animate processing; compact success/error/update states omit the ribbons.
+- Recording uses coral emphasis, processing uses cyan, and success/error keep semantically clear mint/amber medallions while sharing the branded material.
+- The live recording symbol has a subtle accent pulse in addition to the audio-driven ribbons.
+- Reduce Motion switches to static/fade-only feedback.
+- Presentation generations own auto-hide, so a stale delayed hide cannot dismiss newer feedback.
+- Animation and level timers are invalidated by hide/teardown.
+- The panel is ordered out at idle and appears only for recording, processing, or brief success/error/update feedback.
+
+## Provider and cost boundary
+
+The configured local Whisper path remains $0 per transcription and per retry; audio stays on this Mac. Cloud behavior is unchanged but retry is a new request:
+
+- OpenAI/Groq transcription sends the retained WAV again and can incur another provider charge.
+- Cloud cleanup sends transcript text again and can incur another cleanup charge.
+- Provider tier, rate limit, and available account spend were not inspected.
+
+## Verification evidence
+
+Passed during this implementation:
+
+- `./scripts/test-direct.sh`
+  - Existing routing/model/signal/volume/hotkey/permission/dictionary/update checks passed.
+  - New store checks passed for schema/order/duration, immutable original error/provider, mutable latest error/provider, retry count, fixed retention clock, exact expiry boundary, active exclusion, `0700`/`0600`, retry eligibility, stale staging/processing recovery, transcript preservation, isolated delete, cancellation policy, missing/empty/malformed/null/unsupported/mismatched/symlinked metadata, missing/unusable/zero-byte audio, and nonfatal quarantine.
+  - External retry transition from idle, repeated processing rejection, completion, and active-recording rejection passed.
+- `./scripts/test-audio-capture.sh list` passed and listed current macOS inputs.
+- `./scripts/test-audio-capture.sh system_default` passed using `MacBook Pro Microphone`: maximum level `0.493`, duration `3.093` seconds, `77,589` capture bytes.
+- `FLOWTYPE_ARCHS=universal ./scripts/build-app.sh` passed with warnings treated as errors and produced `x86_64 arm64` slices.
+- Before the final brand pass, `./scripts/package-release.sh` passed direct tests, rebuilt the pinned universal whisper.cpp engine, validated signing/plist, created the DMG, and checksum-verified it. That older DMG is not the current release artifact.
+- Deep strict ad-hoc signature validation and plist lint passed for `dist/FlowType.app`.
+- An isolated native preview rendered the branded recording, processing, success, error, intermediate-orb, and collapse states against real desktop content. The final surfaces had one continuous navy silhouette, logo-derived three-ribbon motion, readable pearl text, and no window border or rectangular panel shadow.
+- The redesigned app was installed with a recoverable backup, relaunched, and its running `/Applications` executable hash was matched exactly to `dist/FlowType.app`.
+- `swift test` remains unavailable because this machine's Swift package API rejects the existing `swiftLanguageModes: [.v5]` manifest declaration; the project-owned direct suite and actual warnings-as-errors app compiler passed.
+- Final source diff hygiene (`git diff --check`) passed.
+
+The CMake whisper build emitted only its upstream deprecation warning about compatibility below CMake 3.10; the build completed successfully.
+
+## Manual checks still required
+
+The verified build is installed and running. These physical/product checks remain open:
+
+1. Grant/refresh permissions if macOS requests them after the replacement.
+2. In a real text field, make a successful new dictation and confirm Pop at both boundaries, orb-to-capsule entrance, responsive three-ribbon motion, restrained internal light sweep, content/width state morphs, collapse exit, transient success, paste, clipboard recovery, History row, duration, playback, and no idle pill.
+3. Force a reversible provider/model failure and confirm retained audio plus enabled Retry Last.
+4. Restore valid current settings and confirm Retry Last pastes and keeps the clipboard.
+5. Retry from History and confirm no automatic paste, then Copy.
+6. Confirm playback pause/resume/progress and stop-on-switch/close/delete.
+7. Exercise Escape during capture, initial processing, and retry; relaunch after lifecycle interruption.
+8. Confirm one-entry Delete, expiry while running, stale-hide safety, live Reduce Motion response, and pill nonactivation/click-through behavior.
+9. Run the app on an Intel Mac for actual Intel runtime proof; only structural universal verification exists here.
+
+## Changed feature files
+
+Created:
+
+- `Sources/FlowType/RecordingHistoryStore.swift`
+- `Sources/FlowType/RecordingHistoryWindowController.swift`
+- `Sources/FlowType/TranscriptQuality.swift`
+- `Tests/AudioCaptureProbe/main.swift`
+- `Tests/OutputVolumeProbe/main.swift`
+- `ThirdPartyLicenses/silero-vad-LICENSE.txt`
+- `scripts/fetch-vad-model.sh`
+- `scripts/test-audio-capture.sh`
+
+Modified for this feature:
+
+- `Sources/FlowType/ConfigStore.swift`
+- `Sources/FlowType/Models.swift`
+- `Sources/FlowType/AudioDeviceService.swift`
+- `Sources/FlowType/AudioRecorder.swift`
+- `Sources/FlowType/AudioSignalQuality.swift`
+- `Sources/FlowType/GestureStateMachine.swift`
+- `Sources/FlowType/AppCoordinator.swift`
+- `Sources/FlowType/TranscriptionService.swift`
+- `Sources/FlowType/AppDelegate.swift`
+- `Sources/FlowType/AudioFeedbackService.swift`
+- `Sources/FlowType/LocalModelManager.swift`
+- `Sources/FlowType/OutputVolumeDucker.swift`
+- `Sources/FlowType/PersonalDictionary.swift`
+- `Sources/FlowType/PillWindowController.swift`
+- `Sources/FlowType/SettingsWindowController.swift`
+- `Support/Info.plist`
+- `THIRD_PARTY_NOTICES.md`
+- `Tests/ManualTests/main.swift`
+- `scripts/build-app.sh`
+- `scripts/test-direct.sh`
+- `README.md`
+- `docs/ARCHITECTURE.md`
+- `docs/INSTALL_FOR_FRIENDS.md`
+- `HANDOFF.md`
+
+At handoff completion, all source-release changes above are committed and pushed together. Ignored local build outputs, installed-app backups, and visual preview captures remain outside Git.
+
+## Important boundaries
+
+- The app version is now `0.8.0` build `13`. No new package dependency, database, account, cloud sync, search, export, bulk History UI, interactive pill control, tracker mutation, deployment, or publication was added.
+- The three-day list is recovery, not an indefinite transcript archive.
+- The current DMG predates the brand-aligned capsule. The installed app and `dist/FlowType.app` are current, but a distributable DMG must be rebuilt before any release.
+- Building and isolated previewing do not prove the global shortcut, target-app paste, audible tone, perceived animation quality during a real capture, History focus behavior, or Intel runtime.
+- Ad-hoc builds are not notarized and may require macOS privacy grants again after replacement.
+
+## Next action
+
+Run the remaining physical manual matrix above against the installed app. Before any public release, rebuild and re-verify the universal DMG so it includes the final brand pass; publication remains a separate approval boundary.

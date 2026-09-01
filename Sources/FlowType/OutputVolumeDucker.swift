@@ -1,3 +1,4 @@
+import AudioToolbox
 import CoreAudio
 import Foundation
 
@@ -118,12 +119,12 @@ final class OutputVolumeDucker {
 final class CoreAudioOutputVolumeController: OutputVolumeControlling {
     func defaultOutputControl() -> OutputVolumeControl? {
         guard let deviceID = defaultOutputDeviceID() else { return nil }
-        return volumeControl(for: deviceID, element: kAudioObjectPropertyElementMain)
+        return virtualMainVolumeControl(for: deviceID)
     }
 
     func volume(for control: OutputVolumeControl) -> Float32? {
         guard let deviceID = deviceID(withUID: control.deviceUID) else { return nil }
-        var address = volumeAddress(element: control.element)
+        var address = virtualMainVolumeAddress()
         var value = Float32(0)
         var dataSize = UInt32(MemoryLayout<Float32>.size)
         let status = AudioObjectGetPropertyData(
@@ -139,7 +140,7 @@ final class CoreAudioOutputVolumeController: OutputVolumeControlling {
 
     func setVolume(_ volume: Float32, for control: OutputVolumeControl) -> Bool {
         guard let deviceID = deviceID(withUID: control.deviceUID) else { return false }
-        var address = volumeAddress(element: control.element)
+        var address = virtualMainVolumeAddress()
         var isSettable: DarwinBoolean = false
         guard AudioObjectIsPropertySettable(deviceID, &address, &isSettable) == noErr,
               isSettable.boolValue else {
@@ -155,7 +156,22 @@ final class CoreAudioOutputVolumeController: OutputVolumeControlling {
             UInt32(MemoryLayout<Float32>.size),
             &clampedVolume
         )
-        return status == noErr
+        guard status == noErr else { return false }
+
+        var readback = Float32.zero
+        var dataSize = UInt32(MemoryLayout<Float32>.size)
+        guard AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &dataSize,
+            &readback
+        ) == noErr else {
+            return false
+        }
+
+        return abs(readback - clampedVolume) <= 0.02
     }
 
     private func defaultOutputDeviceID() -> AudioDeviceID? {
@@ -217,11 +233,8 @@ final class CoreAudioOutputVolumeController: OutputVolumeControlling {
         return status == noErr ? deviceIDs : []
     }
 
-    private func volumeControl(
-        for deviceID: AudioDeviceID,
-        element: AudioObjectPropertyElement
-    ) -> OutputVolumeControl? {
-        var address = volumeAddress(element: element)
+    private func virtualMainVolumeControl(for deviceID: AudioDeviceID) -> OutputVolumeControl? {
+        var address = virtualMainVolumeAddress()
         var isSettable: DarwinBoolean = false
         guard AudioObjectHasProperty(deviceID, &address),
               AudioObjectIsPropertySettable(deviceID, &address, &isSettable) == noErr,
@@ -233,15 +246,16 @@ final class CoreAudioOutputVolumeController: OutputVolumeControlling {
         return OutputVolumeControl(
             deviceUID: uid,
             deviceName: stringProperty(deviceID, selector: kAudioObjectPropertyName) ?? "Current output",
-            element: element
+            // Retained in the recovery schema for compatibility with older builds.
+            element: kAudioObjectPropertyElementMain
         )
     }
 
-    private func volumeAddress(element: AudioObjectPropertyElement) -> AudioObjectPropertyAddress {
+    private func virtualMainVolumeAddress() -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
             mScope: kAudioObjectPropertyScopeOutput,
-            mElement: element
+            mElement: kAudioObjectPropertyElementMain
         )
     }
 

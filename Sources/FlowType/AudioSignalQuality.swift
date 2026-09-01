@@ -5,8 +5,17 @@ enum AudioSignalQuality {
     // only rejects effectively empty capture pipelines; it is intentionally far
     // below ordinary quiet speech so it does not act as a speech detector.
     static let minimumPeakAmplitude: Float = 0.00018
+    static let quietSpeechTargetPeak: Float = 0.35
+    static let maximumQuietSpeechGain: Float = 4
 
     static func isNearSilent(peakAmplitude: Float) -> Bool {
         !peakAmplitude.isFinite || abs(peakAmplitude) < minimumPeakAmplitude
+    }
+
+    static func gainForQuietSpeech(peakAmplitude: Float) -> Float {
+        guard peakAmplitude.isFinite,
+              peakAmplitude > minimumPeakAmplitude,
+              peakAmplitude < quietSpeechTargetPeak else { return 1 }
+        return min(maximumQuietSpeechGain, quietSpeechTargetPeak / peakAmplitude)
     }
 }

@@ -74,6 +74,12 @@ if [[ "$BUNDLE_WHISPER" == "1" ]]; then
     /bin/cp "$WHISPER_BINARY" "$RESOURCES_DIR/Whisper/bin/whisper-cli"
     /bin/chmod 755 "$RESOURCES_DIR/Whisper/bin/whisper-cli"
     /usr/bin/codesign --force --sign - "$RESOURCES_DIR/Whisper/bin/whisper-cli"
+
+    "$PROJECT_DIR/scripts/fetch-vad-model.sh"
+    /bin/mkdir -p "$RESOURCES_DIR/Whisper/models"
+    /bin/cp \
+        "$PROJECT_DIR/.build/vendor/ggml-silero-v6.2.0.bin" \
+        "$RESOURCES_DIR/Whisper/models/ggml-silero-v6.2.0.bin"
 fi
 
 /usr/bin/codesign --force --sign - "$APP_DIR"

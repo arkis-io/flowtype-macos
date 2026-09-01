@@ -49,6 +49,29 @@ struct PersonalDictionary: Equatable {
         return "Vocabulary: " + vocabulary.joined(separator: ", ")
     }
 
+    func isRecognitionPromptEcho(_ text: String) -> Bool {
+        let normalizedVocabulary = vocabulary.map(Self.normalizedRecognitionText)
+            .filter { !$0.isEmpty }
+        guard normalizedVocabulary.count >= 2 else { return false }
+
+        let normalizedText = Self.normalizedRecognitionText(text)
+        let fullVocabularySequence = normalizedVocabulary.joined(separator: " ")
+        if normalizedText == fullVocabularySequence ||
+            normalizedText == "vocabulary \(fullVocabularySequence)" {
+            return true
+        }
+
+        let vocabularySet = Set(normalizedVocabulary)
+        let listedItems = text.components(
+            separatedBy: CharacterSet(charactersIn: ",;\n")
+        )
+            .map(Self.normalizedRecognitionText)
+            .filter { !$0.isEmpty }
+
+        guard listedItems.count >= 2 else { return false }
+        return listedItems.allSatisfy(vocabularySet.contains)
+    }
+
     func applyingReplacements(to text: String) -> String {
         replacements.reduce(text) { result, replacement in
             let escaped = NSRegularExpression.escapedPattern(for: replacement.source)
@@ -73,5 +96,14 @@ struct PersonalDictionary: Equatable {
             let key = value.lowercased()
             return seen.insert(key).inserted
         }
+    }
+
+    private static func normalizedRecognitionText(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }

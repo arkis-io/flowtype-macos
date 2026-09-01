@@ -23,12 +23,15 @@ GestureStateMachine
   │ start / stop / cancel / show-mode actions
   ▼
 AppCoordinator ───────────────► PillWindowController
-  │                               recording / processing feedback
+  │                               transient recording / processing feedback
   ├─► AudioDeviceService
   ├─► AudioRecorder
   ├─► OutputVolumeDucker
+  ├─► RecordingHistoryStore
+  │       │ private staged CAF → versioned three-day entry
+  │       ▼
   └─► AudioConverterService
-          │ temporary 16 kHz mono WAV
+          │ retained 16 kHz mono WAV
           ▼
      TranscriptionService
           │ raw transcript
@@ -73,7 +76,7 @@ Settings → Install Offline Model
   → temporary file in Application Support
   → exact byte-count check
   → streaming SHA-256 verification
-  → atomic move to models/ggml-small.en.bin
+  → atomic move to models/ggml-medium.en.bin or ggml-small.en.bin
 ```
 
 The final filename is never replaced before verification. App replacement and model replacement are therefore independent operations.
@@ -86,13 +89,14 @@ The final filename is never replaced before verification. App replacement and mo
 
 - accessory/menu-bar lifecycle;
 - Settings window;
+- Recording History window, Retry Last action, and retention timer;
 - Launch at Login;
 - top-level permission actions;
 - update checks and update prompts.
 
 `LocalModelManager` owns only model download/storage state. It has no access to the microphone, hotkeys, transcript, clipboard, `.env`, or update installation.
 
-`AppCoordinator` owns one dictation session at a time. Keeping release checks out of the coordinator prevents network/update work from changing microphone or hotkey state.
+`AppCoordinator` owns one capture or processing attempt at a time. Keeping release checks out of the coordinator prevents network/update work from changing microphone or hotkey state. `RecordingHistoryWindowController` reads lightweight metadata on demand and creates an `AVAudioPlayer` only for the selected recording.
 
 ## Gesture state machine
 
@@ -109,26 +113,28 @@ The event monitor passes the original `CGEvent` timestamp into the state machine
 
 ## Session identity and cancellation
 
-Every processing run receives a UUID. Completion code checks that UUID before inserting text. Escape:
+Every processing run has both an attempt UUID and a retained-entry UUID. Completion code checks both before changing metadata, UI, clipboard, or paste state. The context also records whether work came from a new capture, Retry Last, or History, and whether delivery is paste or History-only. Escape:
 
 1. resets the gesture state;
-2. stops or discards recording;
+2. stops or discards a new recording;
 3. restores output volume;
 4. cancels the async processing task;
 5. invalidates the active UUID;
 6. hides the recording pill.
 
-This prevents an old API response or local process completion from pasting text after the user cancelled.
+This prevents an old API response or local process completion from pasting text after the user cancelled. Escape deletes a cancelled new capture/initial attempt, but a cancelled retry keeps the older audio and transcript. Disabling dictation, opening Settings, or quitting deletes an unfinished capture and marks already-finalized work interrupted so it can be retried.
 
 ## Audio capture and conversion
 
-`AudioDeviceService` enumerates macOS input devices and resolves the configured preference. `system_default` is the safest setting because it follows AirPods and other changes made in Control Center.
+`AudioDeviceService` enumerates macOS input devices and records their Core Audio transport type. Automatic mode normally follows the system default. When Bluetooth headphones are the output and their Bluetooth microphone is also the default input, the policy chooses the built-in microphone instead. Explicit device selections are always respected.
 
-`AudioRecorder` captures native microphone audio. Experimental Apple voice processing is optional. If a device exposes an unsafe multichannel voice-processing stream, recording falls back to ordinary capture.
+`AudioRecorder` uses `AVCaptureSession` with an explicit `AVCaptureDeviceInput` and `AVCaptureAudioFileOutput`. This avoids the previous failure mode where retargeting an initialized `AVAudioEngine` audio unit appeared successful but delivered empty or malformed frames. Dictation capture receives a pre-created private staging directory; the Settings microphone test still receives a disposable temporary directory. Stopping is asynchronous so file finalization completes before promotion and conversion.
 
 `AudioSignalQuality` rejects near-digital silence before Whisper runs. This reduces hallucinated phrases such as “You” from effectively empty recordings.
 
-`AudioConverterService` uses macOS `afconvert` to create the mono 16 kHz WAV expected by Whisper and cloud speech endpoints.
+`AudioConverterService` uses macOS `afconvert` to create the mono 16 kHz WAV expected by Whisper and cloud speech endpoints. Optional quiet-speech normalization is capped at 4× and never boosts an already healthy signal.
+
+The recording pill and Settings microphone test poll `AVCaptureAudioChannel.averagePowerLevel`. The meter is diagnostic: the final file is still inspected independently before transcription.
 
 ## Music lowering
 
@@ -139,7 +145,7 @@ This prevents an old API response or local process completion from pasting text 
 3. applies the configured relative level;
 4. restores the exact prior volume after stop, cancellation, Settings, quit, or next-launch crash recovery.
 
-Unsupported HDMI/USB volume controls are skipped rather than failing dictation. Do not reconnect music lowering to the experimental voice-processing path.
+Unsupported HDMI/USB volume controls are skipped rather than failing dictation. Keep music lowering independent from capture routing and quiet-speech normalization.
 
 ## Transcription and cleanup
 
@@ -149,6 +155,8 @@ Unsupported HDMI/USB volume controls are skipped rather than failing dictation. 
 - `openai` — sends the WAV to the configured OpenAI transcription endpoint;
 - `groq` — sends the WAV to Groq.
 
+The bundled local path runs Silero VAD before Whisper. It removes non-speech segments, while `TranscriptQuality` separately rejects output made only of markers such as silence, unintelligible audio, laughter, or background music. Dictionary prompt echoes are also rejected.
+
 `CleanupService` is a separate optional OpenAI-compatible chat-completions call. It sees transcript text, not audio. If cleanup fails and `fallbackToRawOnError` is enabled, FlowType inserts the raw transcript.
 
 `PersonalDictionary` has two roles:
@@ -156,9 +164,21 @@ Unsupported HDMI/USB volume controls are skipped rather than failing dictation. 
 - bare lines become recognition/cleanup vocabulary hints;
 - `heard phrase => Desired Spelling` rules run as deterministic whole-phrase replacements after cleanup.
 
+The local Whisper `*.transcript.txt` output is a scoped process artifact and is removed after success, failure, or cancellation. Transcript persistence belongs only to versioned History metadata.
+
+## Recording history and retry
+
+`RecordingHistoryStore` is Foundation-only and uses no database. Each entry is a UUID directory containing `metadata.json` plus at most one retained `recording.caf` or canonical `recording.wav`. Metadata schema version 1 records the original capture time, duration, status/stage, immutable first and mutable latest error, raw/final transcript, original/latest provider, attempts, and audio availability.
+
+Capture begins under `recordings/.staging/`. A readable nonempty finalized file is promoted atomically into the visible UUID directory before conversion/transcription starts. Successful conversion canonicalizes the exact returned audio as `recording.wav` and removes intermediates. A provider failure therefore retains a verified WAV; a conversion failure may retain its readable CAF. Missing, empty, near-silent, malformed, symlinked, expired, or deleted audio is never offered for retry.
+
+Entries expire exactly three days after `createdAt`; retry does not change that clock. App launch, store reads/writes, and a one-shot next-expiry timer prune inactive entries. Launch reconciliation promotes valid stale staging as failed/interrupted, removes incomplete staging, and marks stale visible processing entries interrupted.
+
+Retry Last selects the newest eligible entry, snapshots current provider/model/cleanup/dictionary/environment settings, runs the shared pipeline, pastes to the prior app, and keeps the result on the clipboard. History retry uses the same current settings and updates the same UUID, but deliberately never synthesizes paste because History activates FlowType. History offers selected-file playback, Copy, Retranscribe, and one-entry confirmed Delete.
+
 ## Clipboard insertion
 
-`TextInsertionService` writes the final text to `NSPasteboard` and synthesizes Cmd-V through Accessibility APIs. Clipboard restoration is optional because restoring too quickly can race a slow target app. The default keeps the transcript on the clipboard as a recovery path.
+`TextInsertionService` writes the final text to `NSPasteboard` and synthesizes Cmd-V through Accessibility APIs. Clipboard restoration is optional because restoring too quickly can race a slow target app. The default keeps the transcript on the clipboard as a recovery path, and Retry Last always keeps its recovered transcript on the clipboard. History retry does not call this service.
 
 ## Configuration and secrets
 
@@ -170,13 +190,14 @@ Unsupported HDMI/USB volume controls are skipped rather than failing dictation. 
 ~/Library/Application Support/FlowType/.env
 ~/Library/Application Support/FlowType/models/
 ~/Library/Application Support/FlowType/output-volume-recovery.json
+~/Library/Application Support/FlowType/recordings/
 ```
 
 Saved JSON is merged over `AppConfig.defaultConfig` before decoding. New fields therefore inherit defaults for existing users. Provider secrets belong only in `.env`, never in `config.json` or source control.
 
-Temporary recordings use the macOS temporary directory and are removed after success, failure, or cancellation.
+The recordings tree uses `0700` directories and `0600` metadata/audio files. FlowType stores no provider keys or arbitrary paths in History metadata and initiates no History sync. Account/FileVault protections apply when enabled, but system backup tools may still copy Application Support.
 
-The downloaded model is outside the app bundle by design. A ~10 MB app update leaves the ~488 MB model untouched. The bundled engine is executable code and is updated with the app; the model is data and is updated only through an explicit Model Manager action.
+Downloaded speech models are outside the app bundle by design. An app update leaves the 488 MB Small or 1.53 GB Medium model untouched. The bundled engine and 885 KB VAD model are updated with the app; the selected Whisper model changes only through an explicit Model Manager action.
 
 ## Update design
 
@@ -199,6 +220,7 @@ Why not Sparkle? FlowType has no Developer ID certificate. Sparkle is excellent 
 | Feature | Leaves the Mac? | Contents |
 | --- | --- | --- |
 | Local Whisper | No | Audio stays local |
+| Three-day History | No app-managed network request | Audio, metadata, and transcript under Application Support |
 | Local cleanup endpoint | No, when bound locally | Transcript text |
 | OpenAI/Groq transcription | Yes | Recorded WAV |
 | Cloud cleanup | Yes | Transcript text and vocabulary hints |
@@ -220,7 +242,7 @@ FLOWTYPE_ARCHS=arm64       Apple Silicon only
 FLOWTYPE_ARCHS=x86_64      Intel only
 ```
 
-It compiles with warnings treated as errors, copies `Info.plist`, the icon, the generated Whisper engine, and license notices, signs the nested engine, then applies an ad-hoc signature to the app.
+It compiles with warnings treated as errors, copies `Info.plist`, the icon, the generated Whisper engine, the pinned Silero VAD model, and license notices, signs the nested engine, then applies an ad-hoc signature to the app.
 
 `scripts/build-whisper.sh` uses CMake to build whisper.cpp `v1.9.1` from the exact commit recorded in the script. It disables shared libraries and host-specific CPU tuning, builds Apple silicon and Intel slices, merges them, and rejects `@rpath`, Homebrew, or `/usr/local` dependencies. CMake is required only on the release-development Mac.
 
@@ -241,6 +263,8 @@ The root MIT `LICENSE` is copied into both the app bundle and DMG. `THIRD_PARTY_
 | --- | --- |
 | `AppDelegate.swift` | app/menu/settings/update lifecycle |
 | `AppCoordinator.swift` | active dictation session orchestration |
+| `RecordingHistoryStore.swift` | staged capture, metadata, retry eligibility, reconciliation, and retention |
+| `RecordingHistoryWindowController.swift` | on-demand History, playback, copy, retry, and delete UI |
 | `GlobalEventMonitor.swift` | listen-only global keyboard events |
 | `GestureStateMachine.swift` | deterministic shortcut modes and cancellation |
 | `AudioRecorder.swift` | microphone capture and WAV preparation |

@@ -17,6 +17,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let offlineEngineStatusLabel = SettingsWindowController.wrappingLabel("")
     private let offlineModelStatusLabel = SettingsWindowController.wrappingLabel("")
     private let offlineModelProgress = NSProgressIndicator()
+    private let offlineModelPopup = NSPopUpButton()
     private let offlineModelButton = NSButton(title: "Install Offline Model", target: nil, action: nil)
     private let removeOfflineModelButton = NSButton(title: "Remove Model", target: nil, action: nil)
 
@@ -59,11 +60,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     )
     private let microphonePopup = NSPopUpButton()
     private let microphoneStatusLabel = SettingsWindowController.wrappingLabel("")
-    private let voiceProcessingCheckbox = NSButton(
-        checkboxWithTitle: "Experimental: improve voice clarity and boost quiet speech",
+    private let boostQuietSpeechCheckbox = NSButton(
+        checkboxWithTitle: "Boost quiet speech after recording",
         target: nil,
         action: nil
     )
+    private let preferBuiltInMicCheckbox = NSButton(
+        checkboxWithTitle: "Use the Mac microphone when Bluetooth headphones are playing audio",
+        target: nil,
+        action: nil
+    )
+    private let microphoneTestButton = NSButton(title: "Test for 3 seconds", target: nil, action: nil)
+    private let microphoneLevel = NSLevelIndicator()
     private let lowerOtherAudioCheckbox = NSButton(
         checkboxWithTitle: "Lower music and other audio while recording",
         target: nil,
@@ -96,6 +104,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private let dictionaryTextView = NSTextView()
     private let saveStatusLabel = NSTextField(labelWithString: "")
+    private var microphoneTestRecorder: AudioRecorder?
+    private var microphoneTestTimer: Timer?
+    private var microphoneTestMaximumLevel: Float = 0
 
     private static let permissionSetupAwaitingKey = "FlowTypePermissionSetupAwaiting"
 
@@ -187,6 +198,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        cancelMicrophoneTest()
         onVisibilityChange?(false)
     }
 
@@ -201,6 +213,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         offlineModelProgress.maxValue = 1
         offlineModelProgress.isIndeterminate = false
         offlineModelProgress.isHidden = true
+        for specification in LocalModelSpecification.supported {
+            offlineModelPopup.addItem(
+                withTitle: "\(specification.displayName) (\(specification.downloadSizeLabel))"
+            )
+            offlineModelPopup.lastItem?.representedObject = specification.identifier
+        }
+        offlineModelPopup.target = self
+        offlineModelPopup.action = #selector(offlineModelChanged)
         offlineModelButton.target = self
         offlineModelButton.action = #selector(offlineModelButtonPressed)
         removeOfflineModelButton.target = self
@@ -230,8 +250,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         feedbackSoundsCheckbox.action = #selector(audioControlsChanged)
         microphonePopup.target = self
         microphonePopup.action = #selector(audioControlsChanged)
-        voiceProcessingCheckbox.target = self
-        voiceProcessingCheckbox.action = #selector(audioControlsChanged)
+        boostQuietSpeechCheckbox.target = self
+        boostQuietSpeechCheckbox.action = #selector(audioControlsChanged)
+        preferBuiltInMicCheckbox.target = self
+        preferBuiltInMicCheckbox.action = #selector(audioControlsChanged)
+        microphoneTestButton.target = self
+        microphoneTestButton.action = #selector(startMicrophoneTest)
+        microphoneLevel.levelIndicatorStyle = .continuousCapacity
+        microphoneLevel.minValue = 0
+        microphoneLevel.maxValue = 1
+        microphoneLevel.doubleValue = 0
+        microphoneLevel.isEditable = false
+        microphoneLevel.translatesAutoresizingMaskIntoConstraints = false
+        microphoneLevel.widthAnchor.constraint(equalToConstant: 120).isActive = true
         lowerOtherAudioCheckbox.target = self
         lowerOtherAudioCheckbox.action = #selector(audioControlsChanged)
         for (title, value) in [
@@ -373,14 +404,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         microphoneControls.alignment = .centerY
         microphoneControls.spacing = 8
 
+        let microphoneTestControls = NSStackView(views: [microphoneTestButton, microphoneLevel])
+        microphoneTestControls.orientation = .horizontal
+        microphoneTestControls.alignment = .centerY
+        microphoneTestControls.spacing = 10
+
         return scrollingTab(views: [
             sectionTitle("Offline transcription"),
             offlineEngineStatusLabel,
+            row(label: "Offline quality", control: offlineModelPopup),
             offlineModelStatusLabel,
             offlineModelProgress,
             offlineModelButtons,
             Self.helpLabel(
-                "The English small model is about 488 MB and downloads once. It stays in FlowType's Application Support folder, so app updates do not download or remove it. After installation, transcription works without internet or usage fees."
+                "Medium English is the recommended accuracy setting. Small English is faster on older Macs. Models download once, survive app updates, work offline, and have no usage fees."
             ),
             divider(),
             sectionTitle("Dictation shortcuts"),
@@ -395,8 +432,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             sectionTitle("Recording feedback and voice clarity"),
             row(label: "Microphone", control: microphoneControls),
             microphoneStatusLabel,
+            row(label: "Input check", control: microphoneTestControls),
             feedbackSoundsCheckbox,
-            voiceProcessingCheckbox,
+            boostQuietSpeechCheckbox,
+            preferBuiltInMicCheckbox,
             lowerOtherAudioCheckbox,
             row(label: "Lowering strength", control: duckingPopup),
             Self.helpLabel(
@@ -585,12 +624,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func audioControlsChanged() {
+        if microphoneTestRecorder != nil {
+            cancelMicrophoneTest()
+        }
         updateAudioControls()
     }
 
     @objc private func refreshMicrophones() {
         populateMicrophonePopup()
         updateAudioControls()
+    }
+
+    @objc private func offlineModelChanged() {
+        guard let identifier = selectedValue(in: offlineModelPopup),
+              let specification = LocalModelSpecification.supported.first(where: {
+                  $0.identifier == identifier
+              }) else { return }
+        modelManager.select(specification)
+        let path = "~/Library/Application Support/FlowType/models/\(specification.filename)"
+        draft.transcription.localModelPath = path
+        modelPathField.stringValue = path
+        updateOfflineModelControls(modelManager.state)
     }
 
     @objc private func transcriptionProviderChanged() {
@@ -615,7 +669,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Remove the offline model?"
-        alert.informativeText = "Local transcription will stop working until you install the 488 MB model again. FlowType itself and your settings will remain installed."
+        alert.informativeText = "Local transcription will stop working until you install \(modelManager.specification.displayName) again. FlowType itself and your other settings will remain installed."
         alert.addButton(withTitle: "Remove Model")
         alert.addButton(withTitle: "Keep Model")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -631,6 +685,50 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func cleanupControlsChanged() {
         updateCleanupControls()
+    }
+
+    @objc private func startMicrophoneTest() {
+        if microphoneTestRecorder != nil {
+            cancelMicrophoneTest()
+            microphoneStatusLabel.stringValue = "Microphone test stopped."
+            microphoneStatusLabel.textColor = .secondaryLabelColor
+            return
+        }
+
+        var audioConfig = draft.audio
+        audioConfig.inputDeviceUID = selectedValue(in: microphonePopup) ?? AudioDeviceService.systemDefaultUID
+        audioConfig.inputDeviceName = audioConfig.inputDeviceUID == AudioDeviceService.systemDefaultUID
+            ? ""
+            : AudioDeviceService.inputDevice(withUID: audioConfig.inputDeviceUID)?.name
+                ?? draft.audio.inputDeviceName
+        audioConfig.preferBuiltInMicWithBluetoothOutput = preferBuiltInMicCheckbox.state == .on
+
+        let recorder = AudioRecorder()
+        do {
+            try recorder.start(config: audioConfig)
+            microphoneTestRecorder = recorder
+            microphoneTestMaximumLevel = 0
+            microphoneLevel.doubleValue = 0
+            microphoneTestButton.title = "Stop test"
+            microphoneStatusLabel.stringValue = "Listening through \(recorder.activeInputDeviceName)… speak normally."
+            microphoneStatusLabel.textColor = .labelColor
+            microphoneTestTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, let recorder = self.microphoneTestRecorder else { return }
+                    let level = recorder.normalizedInputLevel
+                    self.microphoneTestMaximumLevel = max(self.microphoneTestMaximumLevel, level)
+                    self.microphoneLevel.doubleValue = Double(level)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak recorder] in
+                guard let self, self.microphoneTestRecorder === recorder else { return }
+                self.finishMicrophoneTest()
+            }
+        } catch {
+            microphoneStatusLabel.stringValue = error.localizedDescription
+            microphoneStatusLabel.textColor = .systemRed
+            microphoneLevel.doubleValue = 0
+        }
     }
 
     @objc private func reloadPressed() {
@@ -802,18 +900,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         select(number: draft.gestures.maxRecordingSeconds, in: autoStopPopup)
         restoreClipboardCheckbox.state = draft.clipboard.restorePrevious ? .on : .off
         automaticUpdateCheckbox.state = draft.updates.checkAutomatically ? .on : .off
-        populateMicrophonePopup()
         feedbackSoundsCheckbox.state = draft.audio.feedbackSoundsEnabled ? .on : .off
-        voiceProcessingCheckbox.state = draft.audio.voiceProcessingEnabled ? .on : .off
+        boostQuietSpeechCheckbox.state = draft.audio.boostQuietSpeechEnabled ? .on : .off
+        preferBuiltInMicCheckbox.state = draft.audio.preferBuiltInMicWithBluetoothOutput ? .on : .off
         lowerOtherAudioCheckbox.state = draft.audio.lowerOtherAudioEnabled ? .on : .off
         let savedDuckingLevel = draft.audio.duckingLevel.lowercased()
         select(value: savedDuckingLevel == "default" ? "mid" : savedDuckingLevel, in: duckingPopup)
+        populateMicrophonePopup()
 
         activeTranscriptionProvider = draft.transcription.provider.lowercased()
         select(value: activeTranscriptionProvider, in: transcriptionProviderPopup)
         languageField.stringValue = draft.transcription.language
         executableField.stringValue = draft.transcription.localExecutable
         modelPathField.stringValue = draft.transcription.localModelPath
+        let localSpecification = LocalModelSpecification.matching(
+            path: draft.transcription.localModelPath
+        ) ?? .mediumEnglish
+        modelManager.select(localSpecification)
+        select(value: localSpecification.identifier, in: offlineModelPopup)
         loadTranscriptionModel(for: activeTranscriptionProvider)
 
         cleanupEnabledCheckbox.state = draft.cleanup.enabled ? .on : .off
@@ -845,7 +949,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.clipboard.restorePrevious = restoreClipboardCheckbox.state == .on
         draft.updates.checkAutomatically = automaticUpdateCheckbox.state == .on
         draft.audio.feedbackSoundsEnabled = feedbackSoundsCheckbox.state == .on
-        draft.audio.voiceProcessingEnabled = voiceProcessingCheckbox.state == .on
+        draft.audio.voiceProcessingEnabled = false
+        draft.audio.boostQuietSpeechEnabled = boostQuietSpeechCheckbox.state == .on
+        draft.audio.preferBuiltInMicWithBluetoothOutput = preferBuiltInMicCheckbox.state == .on
         draft.audio.lowerOtherAudioEnabled = lowerOtherAudioCheckbox.state == .on
         draft.audio.duckingLevel = selectedValue(in: duckingPopup) ?? "mid"
         draft.audio.inputDeviceUID = selectedValue(in: microphonePopup) ?? AudioDeviceService.systemDefaultUID
@@ -919,22 +1025,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         offlineModelProgress.isIndeterminate = false
         removeOfflineModelButton.isHidden = !modelManager.isInstalled
         offlineModelButton.isEnabled = true
+        offlineModelPopup.isEnabled = true
+        let selectedModelName = modelManager.specification.displayName
 
         switch state {
         case .notInstalled:
-            offlineModelStatusLabel.stringValue = "Model: not installed"
+            offlineModelStatusLabel.stringValue = "\(selectedModelName): not installed"
             offlineModelStatusLabel.textColor = .systemOrange
-            offlineModelButton.title = "Install Offline Model"
+            offlineModelButton.title = "Install \(selectedModelName.replacingOccurrences(of: "Recommended — ", with: "").replacingOccurrences(of: "Fast — ", with: ""))"
         case .downloading(let fraction):
             let percent = Int((fraction * 100).rounded())
-            offlineModelStatusLabel.stringValue = "Downloading model… \(percent)%"
+            offlineModelStatusLabel.stringValue = "Downloading \(selectedModelName)… \(percent)%"
             offlineModelStatusLabel.textColor = .labelColor
             offlineModelProgress.doubleValue = fraction
             offlineModelProgress.isHidden = false
             offlineModelButton.title = "Cancel Download"
             removeOfflineModelButton.isHidden = true
+            offlineModelPopup.isEnabled = false
         case .verifying:
-            offlineModelStatusLabel.stringValue = "Verifying the model before installation…"
+            offlineModelStatusLabel.stringValue = "Verifying \(selectedModelName) before installation…"
             offlineModelStatusLabel.textColor = .labelColor
             offlineModelProgress.isIndeterminate = true
             offlineModelProgress.isHidden = false
@@ -942,10 +1051,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             offlineModelButton.title = "Verifying…"
             offlineModelButton.isEnabled = false
             removeOfflineModelButton.isHidden = true
+            offlineModelPopup.isEnabled = false
         case .ready:
-            offlineModelStatusLabel.stringValue = "Model: installed and verified — ready for private, $0 local transcription"
+            offlineModelStatusLabel.stringValue = "\(selectedModelName): installed and verified — ready for private, $0 local transcription"
             offlineModelStatusLabel.textColor = .systemGreen
-            offlineModelButton.title = "Reinstall Model"
+            offlineModelButton.title = "Reinstall \(selectedModelName.replacingOccurrences(of: "Recommended — ", with: "").replacingOccurrences(of: "Fast — ", with: ""))"
         case .failed(let message):
             offlineModelStatusLabel.stringValue = "Model setup failed: \(message)"
             offlineModelStatusLabel.textColor = .systemRed
@@ -991,20 +1101,86 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func updateMicrophoneStatus() {
         let selectedUID = selectedValue(in: microphonePopup) ?? AudioDeviceService.systemDefaultUID
-        let defaultName = AudioDeviceService.defaultInputDevice()?.name ?? "the system default microphone"
-        if selectedUID == AudioDeviceService.systemDefaultUID {
-            microphoneStatusLabel.stringValue =
-                "Currently \(defaultName). FlowType checks the system default again when every recording starts."
-            microphoneStatusLabel.textColor = .secondaryLabelColor
-        } else if let device = AudioDeviceService.inputDevice(withUID: selectedUID) {
-            microphoneStatusLabel.stringValue =
-                "FlowType will use \(device.name) without changing the Mac's global microphone setting."
-            microphoneStatusLabel.textColor = .systemGreen
-        } else {
-            microphoneStatusLabel.stringValue =
-                "That microphone is disconnected. FlowType will safely fall back to \(defaultName)."
-            microphoneStatusLabel.textColor = .systemOrange
+        var audioConfig = draft.audio
+        audioConfig.inputDeviceUID = selectedUID
+        audioConfig.inputDeviceName = selectedUID == AudioDeviceService.systemDefaultUID
+            ? ""
+            : AudioDeviceService.inputDevice(withUID: selectedUID)?.name ?? draft.audio.inputDeviceName
+        audioConfig.preferBuiltInMicWithBluetoothOutput = preferBuiltInMicCheckbox.state == .on
+
+        do {
+            let plan = try AudioDeviceService.capturePlan(for: audioConfig)
+            if plan.reason == .avoidedBluetoothHeadsetMic {
+                let outputName = AudioDeviceService.defaultOutputDevice()?.name ?? "Bluetooth headphones"
+                microphoneStatusLabel.stringValue =
+                    "\(outputName) is playing audio, so FlowType will record with \(plan.input.name) for clearer speech."
+                microphoneStatusLabel.textColor = .systemGreen
+            } else if plan.input.isBluetooth {
+                microphoneStatusLabel.stringValue =
+                    "\(plan.input.name) is selected. Bluetooth microphone mode can reduce music quality and transcription accuracy."
+                microphoneStatusLabel.textColor = .systemOrange
+            } else if selectedUID == AudioDeviceService.systemDefaultUID {
+                microphoneStatusLabel.stringValue =
+                    "Automatic currently resolves to \(plan.input.name) and is checked again before every recording."
+                microphoneStatusLabel.textColor = .secondaryLabelColor
+            } else {
+                microphoneStatusLabel.stringValue =
+                    "FlowType will record directly from \(plan.input.name) without changing the Mac's global microphone."
+                microphoneStatusLabel.textColor = .systemGreen
+            }
+        } catch {
+            microphoneStatusLabel.stringValue = error.localizedDescription
+            microphoneStatusLabel.textColor = .systemRed
         }
+    }
+
+    private func finishMicrophoneTest() {
+        microphoneTestTimer?.invalidate()
+        microphoneTestTimer = nil
+        microphoneTestButton.isEnabled = false
+        guard let recorder = microphoneTestRecorder else { return }
+        let maximumLevel = microphoneTestMaximumLevel
+
+        Task { @MainActor [weak self, weak recorder] in
+            guard let self, let recorder else { return }
+            do {
+                let sourceURL = try await recorder.stop()
+                try? FileManager.default.removeItem(at: sourceURL.deletingLastPathComponent())
+                guard self.microphoneTestRecorder === recorder else { return }
+                self.microphoneTestRecorder = nil
+                self.microphoneTestButton.title = "Test for 3 seconds"
+                self.microphoneTestButton.isEnabled = true
+                if maximumLevel >= 0.08 {
+                    self.microphoneStatusLabel.stringValue =
+                        "Microphone test passed — \(recorder.activeInputDeviceName) delivered a healthy signal."
+                    self.microphoneStatusLabel.textColor = .systemGreen
+                } else {
+                    self.microphoneStatusLabel.stringValue =
+                        "The microphone opened, but the signal stayed very low. Move closer, check the input level, or choose another microphone."
+                    self.microphoneStatusLabel.textColor = .systemOrange
+                }
+            } catch is CancellationError {
+                // A close, setting change, or second button press intentionally stopped the test.
+            } catch {
+                guard self.microphoneTestRecorder === recorder else { return }
+                self.microphoneTestRecorder = nil
+                self.microphoneTestButton.title = "Test for 3 seconds"
+                self.microphoneTestButton.isEnabled = true
+                self.microphoneStatusLabel.stringValue = error.localizedDescription
+                self.microphoneStatusLabel.textColor = .systemRed
+            }
+        }
+    }
+
+    private func cancelMicrophoneTest() {
+        microphoneTestTimer?.invalidate()
+        microphoneTestTimer = nil
+        microphoneTestRecorder?.cancel()
+        microphoneTestRecorder = nil
+        microphoneTestMaximumLevel = 0
+        microphoneLevel.doubleValue = 0
+        microphoneTestButton.title = "Test for 3 seconds"
+        microphoneTestButton.isEnabled = true
     }
 
     private enum ShortcutMode {

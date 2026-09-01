@@ -1,178 +1,226 @@
 import AVFoundation
 import AudioToolbox
-import CoreAudio
 import Foundation
 
-final class AudioRecorder {
-    private var engine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
+// AVCaptureSession owns an explicit AVCaptureDeviceInput. Unlike retargeting an
+// AVAudioEngine audio unit after it has been created, this guarantees that the
+// device shown in the UI is the device feeding the recording.
+final class AudioRecorder: NSObject, AVCaptureFileOutputRecordingDelegate {
+    private var captureSession: AVCaptureSession?
+    private var fileOutput: AVCaptureAudioFileOutput?
     private var recordingDirectory: URL?
-    private let writeErrorLock = NSLock()
-    private var writeError: Error?
-    private(set) var isUsingVoiceProcessing = false
+    private var recordingURL: URL?
+    private var stopContinuation: CheckedContinuation<URL, Error>?
+    private var finalizedResult: Result<URL, Error>?
+    private var cancellationRequested = false
+    private var deleteOnCancellation = true
+    private var usesDurableDirectory = false
+
     private(set) var activeInputDeviceName = "System Default"
+    private(set) var activeInputRoutingNote = ""
 
     var isRecording: Bool {
-        engine?.isRunning == true
+        captureSession != nil && finalizedResult == nil && !cancellationRequested
     }
 
-    func start(config: AudioConfig) throws {
+    var normalizedInputLevel: Float {
+        let decibels = fileOutput?.connections
+            .flatMap(\.audioChannels)
+            .map(\.averagePowerLevel)
+            .max() ?? -60
+        return min(max((decibels + 60) / 60, 0), 1)
+    }
+
+    func start(config: AudioConfig, destinationDirectory: URL? = nil) throws {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             throw FlowTypeError.permission("Microphone access is required. Use the menu bar item to request it, then enable FlowType in System Settings → Privacy & Security → Microphone.")
         }
         guard !isRecording else { return }
 
-        let directory = FileManager.default.temporaryDirectory
+        let directory = destinationDirectory ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("FlowType", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let sourceURL = directory.appendingPathComponent("recording.caf")
 
-        writeErrorLock.lock()
-        writeError = nil
-        writeErrorLock.unlock()
-
         do {
-            let preferredDevice = config.inputDeviceUID == AudioDeviceService.systemDefaultUID
-                ? nil
-                : AudioDeviceService.inputDevice(withUID: config.inputDeviceUID)
-            let voiceModes = config.voiceProcessingEnabled ? [true, false] : [false]
-            var attempts = voiceModes.map { (voiceProcessing: $0, deviceID: preferredDevice?.id) }
-            if preferredDevice != nil {
-                attempts.append(contentsOf: voiceModes.map { (voiceProcessing: $0, deviceID: nil) })
+            let plan = try AudioDeviceService.capturePlan(for: config)
+            guard let captureDevice = AVCaptureDevice(uniqueID: plan.input.uid) else {
+                throw FlowTypeError.recording(
+                    "\(plan.input.name) could not be opened by the macOS capture system."
+                )
+            }
+            let input = try AVCaptureDeviceInput(device: captureDevice)
+            let output = AVCaptureAudioFileOutput()
+            guard AVCaptureAudioFileOutput.availableOutputFileTypes().contains(.caf) else {
+                throw FlowTypeError.recording("This Mac cannot create the temporary audio format FlowType needs.")
             }
 
-            var setup: (engine: AVAudioEngine, file: AVAudioFile, voiceProcessing: Bool, deviceID: AudioDeviceID?)?
-            var lastError: Error?
-            for attempt in attempts {
-                do {
-                    setup = try makeEngine(
-                        sourceURL: sourceURL,
-                        useVoiceProcessing: attempt.voiceProcessing,
-                        deviceID: attempt.deviceID
-                    )
-                    break
-                } catch {
-                    lastError = error
-                }
+            let session = AVCaptureSession()
+            session.beginConfiguration()
+            guard session.canAddInput(input) else {
+                session.commitConfiguration()
+                throw FlowTypeError.recording("\(plan.input.name) could not be connected for recording.")
             }
-            guard let setup else {
-                throw lastError ?? FlowTypeError.recording("FlowType could not start the selected microphone.")
+            session.addInput(input)
+            guard session.canAddOutput(output) else {
+                session.commitConfiguration()
+                throw FlowTypeError.recording("FlowType could not connect its audio recorder.")
             }
+            session.addOutput(output)
+            session.commitConfiguration()
 
-            engine = setup.engine
-            audioFile = setup.file
-            isUsingVoiceProcessing = setup.voiceProcessing
-            activeInputDeviceName = setup.deviceID.flatMap(AudioDeviceService.inputDevice(withID:))?.name
-                ?? AudioDeviceService.defaultInputDevice()?.name
-                ?? "System Default"
+            cancellationRequested = false
+            deleteOnCancellation = true
+            finalizedResult = nil
+            stopContinuation = nil
+            captureSession = session
+            fileOutput = output
             recordingDirectory = directory
+            recordingURL = sourceURL
+            usesDurableDirectory = destinationDirectory != nil
+            activeInputDeviceName = plan.input.name
+            activeInputRoutingNote = plan.reason == .avoidedBluetoothHeadsetMic
+                ? "Using the built-in microphone so Bluetooth music stays clear."
+                : ""
+
+            session.startRunning()
+            guard session.isRunning else {
+                throw FlowTypeError.recording("The macOS capture session did not start.")
+            }
+            output.startRecording(to: sourceURL, outputFileType: .caf, recordingDelegate: self)
         } catch {
+            tearDownCapture(deleteRecording: true)
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
     }
 
-    func stop() throws -> URL {
-        guard let engine, let directory = recordingDirectory else {
+    func stop() async throws -> URL {
+        if let result = finalizedResult {
+            finalizedResult = nil
+            return try result.get()
+        }
+        guard let output = fileOutput, recordingURL != nil else {
             throw FlowTypeError.recording("There is no active recording to stop.")
         }
 
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        self.engine = nil
-        isUsingVoiceProcessing = false
-        audioFile = nil
-        recordingDirectory = nil
-
-        writeErrorLock.lock()
-        let capturedWriteError = writeError
-        writeError = nil
-        writeErrorLock.unlock()
-
-        if let capturedWriteError {
-            try? FileManager.default.removeItem(at: directory)
-            throw FlowTypeError.recording("Audio recording failed: \(capturedWriteError.localizedDescription)")
+        return try await withCheckedThrowingContinuation { continuation in
+            stopContinuation = continuation
+            requestStopWhenReady(output: output, attemptsRemaining: 20)
         }
-
-        return directory.appendingPathComponent("recording.caf")
     }
 
-    func cancel() {
-        if let engine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
+    func cancel(retainRecording: Bool = false) {
+        cancellationRequested = true
+        deleteOnCancellation = !retainRecording
+        if let continuation = stopContinuation {
+            stopContinuation = nil
+            continuation.resume(throwing: CancellationError())
         }
-        engine = nil
-        isUsingVoiceProcessing = false
-        audioFile = nil
 
-        if let recordingDirectory {
+        guard let output = fileOutput, output.isRecording else {
+            tearDownCapture(deleteRecording: deleteOnCancellation)
+            return
+        }
+        output.stopRecording()
+    }
+
+    func duration(of audioURL: URL) -> TimeInterval {
+        guard let file = try? AVAudioFile(forReading: audioURL),
+              file.processingFormat.sampleRate > 0 else { return 0 }
+        return TimeInterval(file.length) / file.processingFormat.sampleRate
+    }
+
+    func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection],
+        error: Error?
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            self?.finishRecording(outputFileURL: outputFileURL, error: error)
+        }
+    }
+
+    private func requestStopWhenReady(
+        output: AVCaptureAudioFileOutput,
+        attemptsRemaining: Int
+    ) {
+        guard stopContinuation != nil else { return }
+        if output.isRecording {
+            output.stopRecording()
+            return
+        }
+        guard attemptsRemaining > 0, captureSession?.isRunning == true else {
+            let error = FlowTypeError.recording(
+                "The microphone opened but did not begin delivering audio. Try the microphone test in Settings."
+            )
+            let continuation = stopContinuation
+            stopContinuation = nil
+            tearDownCapture(deleteRecording: true)
+            continuation?.resume(throwing: error)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self, weak output] in
+            guard let self, let output else { return }
+            self.requestStopWhenReady(output: output, attemptsRemaining: attemptsRemaining - 1)
+        }
+    }
+
+    private func finishRecording(outputFileURL: URL, error: Error?) {
+        let wasCancelled = cancellationRequested
+        let successfullyFinished: Bool
+        if let error = error as NSError? {
+            successfullyFinished = error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true
+        } else {
+            successfullyFinished = true
+        }
+
+        let result: Result<URL, Error>
+        if wasCancelled {
+            result = .failure(CancellationError())
+        } else if successfullyFinished {
+            result = .success(outputFileURL)
+        } else {
+            result = .failure(
+                FlowTypeError.recording(
+                    "Audio recording ended unexpectedly: \(error?.localizedDescription ?? "unknown capture error")"
+                )
+            )
+        }
+
+        let continuation = stopContinuation
+        stopContinuation = nil
+        if successfullyFinished && usesDurableDirectory {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: outputFileURL.path
+            )
+        }
+        tearDownCapture(deleteRecording: (wasCancelled && deleteOnCancellation) || !successfullyFinished)
+        cancellationRequested = false
+        deleteOnCancellation = true
+        if let continuation {
+            continuation.resume(with: result)
+        } else if !wasCancelled {
+            finalizedResult = result
+        }
+    }
+
+    private func tearDownCapture(deleteRecording: Bool) {
+        if captureSession?.isRunning == true {
+            captureSession?.stopRunning()
+        }
+        captureSession = nil
+        fileOutput = nil
+        if deleteRecording, let recordingDirectory {
             try? FileManager.default.removeItem(at: recordingDirectory)
         }
         recordingDirectory = nil
-    }
-
-    private func makeEngine(
-        sourceURL: URL,
-        useVoiceProcessing: Bool,
-        deviceID: AudioDeviceID?
-    ) throws -> (engine: AVAudioEngine, file: AVAudioFile, voiceProcessing: Bool, deviceID: AudioDeviceID?) {
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-
-        if useVoiceProcessing {
-            try input.setVoiceProcessingEnabled(true)
-            input.isVoiceProcessingAGCEnabled = true
-        }
-
-        if var deviceID {
-            guard let audioUnit = input.audioUnit else {
-                throw FlowTypeError.recording("The selected microphone could not be attached to the audio engine.")
-            }
-            let status = AudioUnitSetProperty(
-                audioUnit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &deviceID,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
-            guard status == noErr else {
-                throw FlowTypeError.recording("The selected microphone could not be opened (Core Audio \(status)).")
-            }
-        }
-
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw FlowTypeError.recording("The selected microphone did not expose a usable audio format.")
-        }
-        if useVoiceProcessing, format.channelCount > 2 {
-            throw FlowTypeError.recording(
-                "Voice processing exposed an unsupported multichannel stream; retrying with normal microphone capture."
-            )
-        }
-
-        let file = try AVAudioFile(forWriting: sourceURL, settings: format.settings)
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
-            do {
-                try file.write(from: buffer)
-            } catch {
-                self?.writeErrorLock.lock()
-                self?.writeError = error
-                self?.writeErrorLock.unlock()
-            }
-        }
-
-        do {
-            engine.prepare()
-            try engine.start()
-            return (engine, file, useVoiceProcessing, deviceID)
-        } catch {
-            input.removeTap(onBus: 0)
-            engine.stop()
-            throw error
-        }
+        recordingURL = nil
+        usesDurableDirectory = false
+        activeInputRoutingNote = ""
     }
 }
 
@@ -183,7 +231,10 @@ final class AudioConverterService {
         self.processRunner = processRunner
     }
 
-    func convertToWhisperWAV(_ sourceURL: URL) async throws -> URL {
+    func convertToWhisperWAV(
+        _ sourceURL: URL,
+        boostQuietSpeech: Bool = false
+    ) async throws -> URL {
         guard let sourceFile = try? AVAudioFile(forReading: sourceURL), sourceFile.length > 0 else {
             throw FlowTypeError.recording(
                 "No microphone audio was captured. Try again and begin speaking after the start sound."
@@ -218,6 +269,12 @@ final class AudioConverterService {
                 "The microphone recording was nearly silent, so FlowType stopped before transcription. Check the selected microphone and try again."
             )
         }
+        if boostQuietSpeech {
+            let gain = AudioSignalQuality.gainForQuietSpeech(peakAmplitude: peakAmplitude)
+            if gain > 1 {
+                return try boostedCopy(of: outputURL, gain: gain)
+            }
+        }
         return outputURL
     }
 
@@ -244,5 +301,45 @@ final class AudioConverterService {
             }
         }
         return peak
+    }
+
+    private func boostedCopy(of sourceURL: URL, gain: Float) throws -> URL {
+        let source = try AVAudioFile(forReading: sourceURL)
+        let format = source.processingFormat
+        guard format.commonFormat == .pcmFormatFloat32,
+              !format.isInterleaved,
+              format.channelCount == 1,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_096) else {
+            throw FlowTypeError.conversion("FlowType could not boost the captured voice safely.")
+        }
+
+        let boostedURL = sourceURL.deletingLastPathComponent().appendingPathComponent("recording-boosted.wav")
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
+        let destination = try AVAudioFile(
+            forWriting: boostedURL,
+            settings: settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+
+        while source.framePosition < source.length {
+            let remaining = source.length - source.framePosition
+            let requestedFrames = AVAudioFrameCount(min(Int64(buffer.frameCapacity), remaining))
+            try source.read(into: buffer, frameCount: requestedFrames)
+            guard buffer.frameLength > 0, let samples = buffer.floatChannelData?[0] else { break }
+            for frame in 0..<Int(buffer.frameLength) {
+                samples[frame] = min(max(samples[frame] * gain, -1), 1)
+            }
+            try destination.write(from: buffer)
+        }
+        return boostedURL
     }
 }
