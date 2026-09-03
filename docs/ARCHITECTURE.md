@@ -176,6 +176,8 @@ Entries expire exactly three days after `createdAt`; retry does not change that 
 
 Retry Last selects the newest eligible entry, snapshots current provider/model/cleanup/dictionary/environment settings, runs the shared pipeline, pastes to the prior app, and keeps the result on the clipboard. History retry uses the same current settings and updates the same UUID, but deliberately never synthesizes paste because History activates FlowType. History offers selected-file playback, Copy, Retranscribe, and one-entry confirmed Delete.
 
+`RetryCostNotice` is a pure summary of which paid providers a retry would contact again (cloud transcription re-sends the retained audio; enabled cloud cleanup re-sends the transcript). `AppDelegate` shows it in the Retry Last menu title and tooltip rather than a dialog, because a modal would activate FlowType and steal focus from the paste target. The History retry path already activates FlowType, so it asks for confirmation before a paid retry. Local-only configurations produce no notice.
+
 ## Clipboard insertion
 
 `TextInsertionService` writes the final text to `NSPasteboard` and synthesizes Cmd-V through Accessibility APIs. Clipboard restoration is optional because restoring too quickly can race a slow target app. The default keeps the transcript on the clipboard as a recovery path, and Retry Last always keeps its recovered transcript on the clipboard. History retry does not call this service.
@@ -231,7 +233,9 @@ GitHub and selected cloud providers have their own network logs and terms. “No
 
 ## Build and packaging
 
-`scripts/test-direct.sh` compiles and runs deterministic tests without relying on the local SwiftPM installation.
+`scripts/test-direct.sh` compiles every file in `Sources/FlowType/` except the `@main` entry point together with `Tests/ManualTests/main.swift`, with warnings treated as errors and the same framework list as the app build, then runs the resulting binary. A new source file is therefore covered automatically; the suite fails to build if any file fails to compile under test.
+
+It deliberately does not use SwiftPM. Apple's Command Line Tools ship Swift Testing but not XCTest, so the XCTest target in `Package.swift` needs a full Xcode installation. Separately, the original development Mac had a half-updated Command Line Tools install whose `PackageDescription` interface and library disagreed, which made every manifest fail at link time; reinstalling the Command Line Tools is the fix, not editing `Package.swift`.
 
 `scripts/build-app.sh` accepts:
 
@@ -265,6 +269,8 @@ The root MIT `LICENSE` is copied into both the app bundle and DMG. `THIRD_PARTY_
 | `AppCoordinator.swift` | active dictation session orchestration |
 | `RecordingHistoryStore.swift` | staged capture, metadata, retry eligibility, reconciliation, and retention |
 | `RecordingHistoryWindowController.swift` | on-demand History, playback, copy, retry, and delete UI |
+| `RetryCostNotice.swift` | which paid providers a retry would contact again |
+| `TranscriptQuality.swift` | detection of silence-only or non-speech transcripts |
 | `GlobalEventMonitor.swift` | listen-only global keyboard events |
 | `GestureStateMachine.swift` | deterministic shortcut modes and cancellation |
 | `AudioRecorder.swift` | microphone capture and WAV preparation |

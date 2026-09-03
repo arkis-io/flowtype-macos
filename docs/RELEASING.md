@@ -30,7 +30,7 @@ Do not automate repository visibility changes. They expose the full reachable Gi
 ## Release prerequisites
 
 - macOS 13 or later
-- Apple's command-line developer tools (`xcrun`, `swiftc`, `codesign`, `lipo`)
+- Apple's command-line developer tools (`xcrun`, `swiftc`, `codesign`, `lipo`); the release scripts do not use SwiftPM or Xcode
 - CMake for compiling the pinned whisper.cpp release engine (`brew install cmake` on the release Mac)
 - `hdiutil`, `ditto`, `plutil`, and `shasum` from macOS
 - GitHub CLI only for publishing (`gh auth status`)

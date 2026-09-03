@@ -355,12 +355,12 @@ FlowType intentionally does not copy their account systems, indefinite archives,
 - During active music lowering, a small local recovery file stores the output device identifier and prior volume. It is deleted after successful restoration.
 - LLM cleanup sends transcript text only when a cloud cleanup endpoint is enabled.
 - OpenAI/Groq transcription sends the audio to the selected provider; their API data terms apply.
-- Retrying with OpenAI or Groq sends the retained audio to that provider again. History metadata never stores API keys or `.env` values.
+- Retrying with OpenAI or Groq sends the retained audio to that provider again, and cloud cleanup sends the transcript again. FlowType names the providers in the **Retry Last Transcription** menu title and asks for confirmation before a paid retry from History; local-only setups see no notice. History metadata never stores API keys or `.env` values.
 - If automatic update checks are enabled, FlowType makes an unauthenticated HTTPS request to GitHub's public latest-release endpoint at most once every 24 hours. It sends no FlowType account, transcript, audio, dictionary, or device identifier. GitHub still receives ordinary network metadata such as the request IP address.
 
 ## Development and verification
 
-Run the deterministic state-machine and dictionary tests:
+Run the project-owned direct test suite. It compiles every app source file with warnings treated as errors and runs the deterministic state-machine, store, dictionary, and settings tests:
 
 ```bash
 ./scripts/test-direct.sh
@@ -391,7 +391,12 @@ Build a universal Intel + Apple Silicon DMG and its SHA-256 checksum:
 
 This packages `FlowType.app`, an Applications shortcut, the friend-install guide, and all license notices. The model itself is intentionally not in the DMG. Packaging does not publish, commit, push, change repository visibility, or weaken macOS security.
 
-A standard `Package.swift` and XCTest suite are also included for development in a full, internally consistent Xcode installation. The direct test script uses Apple's compiler/frameworks and remains the authoritative test path in this environment. Release builds additionally use CMake to compile the pinned bundled engine.
+A standard `Package.swift` and XCTest suite are also included for development in Xcode. Two toolchain facts matter for `swift test`:
+
+- Apple's Command Line Tools do not ship XCTest, so the XCTest target compiles only with a full Xcode installation.
+- On the original development Mac the Command Line Tools were half-updated: `PackageDescription.swiftmodule` (the interface the compiler reads) was newer than `libPackageDescription.dylib` (the library the linker binds), so every manifest failed to link regardless of its contents. `swift package describe` reproduces it. The fix is to reinstall the Command Line Tools (`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`) or install Xcode; no `Package.swift` change helps.
+
+The direct test script uses Apple's compiler and frameworks without SwiftPM and remains the authoritative test path. Release builds additionally use CMake to compile the pinned bundled engine.
 
 ## Current boundaries
 
