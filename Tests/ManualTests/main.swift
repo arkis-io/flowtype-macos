@@ -795,6 +795,37 @@ do {
     expect((try? SettingsValidator.validate(valid)) == nil, true, "microphone preference cannot be empty")
 }
 
+do {
+    var config = AppConfig.defaultConfig
+    config.transcription.provider = "local"
+    config.cleanup.enabled = false
+    expect(RetryCostNotice.summary(for: config) == nil, true, "local-only retry shows no cost notice")
+
+    config.cleanup.enabled = true
+    config.cleanup.provider = "local"
+    expect(RetryCostNotice.summary(for: config) == nil, true, "local cleanup endpoint shows no cost notice")
+
+    config.transcription.provider = "OpenAI"
+    config.cleanup.enabled = false
+    let transcriptionOnly = RetryCostNotice.summary(for: config)
+    expect(transcriptionOnly?.providers ?? [], ["OpenAI"], "cloud transcription names its provider")
+    expect(transcriptionOnly?.message.contains("retained audio") ?? false, true, "cloud transcription notice mentions re-sending audio")
+
+    config.transcription.provider = "local"
+    config.cleanup.enabled = true
+    config.cleanup.provider = "groq"
+    let cleanupOnly = RetryCostNotice.summary(for: config)
+    expect(cleanupOnly?.providers ?? [], ["Groq"], "cloud cleanup names its provider")
+    expect(cleanupOnly?.message.contains("transcript") ?? false, true, "cloud cleanup notice mentions re-sending the transcript")
+
+    config.transcription.provider = "groq"
+    expect(RetryCostNotice.summary(for: config)?.providers ?? [], ["Groq"], "same provider for both stages is listed once")
+
+    config.transcription.provider = "openai"
+    expect(RetryCostNotice.summary(for: config)?.providers ?? [], ["OpenAI", "Groq"], "distinct providers are listed in pipeline order")
+    expect(RetryCostNotice.summary(for: config)?.message.hasPrefix("Retrying will send the retained audio to OpenAI") ?? false, true, "notice message starts with the transcription action")
+}
+
 if failures > 0 {
     print("\n\(failures) test(s) failed")
     exit(1)

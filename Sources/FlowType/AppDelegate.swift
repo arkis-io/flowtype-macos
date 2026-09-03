@@ -66,8 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.settingsWindowController = settingsWindowController
             let historyWindowController = RecordingHistoryWindowController(store: historyStore)
-            historyWindowController.onRetry = { [weak coordinator] id in
-                coordinator?.retryHistoryEntry(id: id)
+            historyWindowController.onRetry = { [weak self, weak coordinator] id in
+                guard let coordinator else { return }
+                if let notice = RetryCostNotice.summary(for: coordinator.config),
+                   self?.confirmPaidRetry(notice) != true {
+                    return
+                }
+                coordinator.retryHistoryEntry(id: id)
             }
             historyWindowController.onEntriesChange = { [weak self] in
                 self?.updateRecoveryUI()
@@ -337,6 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateConfigurationDidChange() {
+        updateRecoveryUI()
         if automaticUpdateChecksEnabled {
             scheduleAutomaticUpdateCheck()
         } else {
@@ -462,6 +468,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyMenuItem?.isEnabled = true
         retryLastMenuItem?.isEnabled = !coordinator.isBusy
             && (try? historyStore.newestRetryableEntry(activeIDs: coordinator.activeEntryIDs)) != nil
+
+        // Retry Last pastes into the previously focused app, so it must not show a
+        // modal that would activate FlowType. Surface the cost boundary in the menu instead.
+        if let notice = RetryCostNotice.summary(for: coordinator.config) {
+            retryLastMenuItem?.title = "Retry Last Transcription (uses \(notice.providers.joined(separator: " + ")))"
+            retryLastMenuItem?.toolTip = notice.message
+        } else {
+            retryLastMenuItem?.title = "Retry Last Transcription"
+            retryLastMenuItem?.toolTip = nil
+        }
+    }
+
+    private func confirmPaidRetry(_ notice: RetryCostNotice.Summary) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Retranscribe with \(notice.providers.joined(separator: " and "))?"
+        alert.informativeText = notice.message
+        alert.addButton(withTitle: "Retranscribe")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func scheduleNextRetentionPrune() {
