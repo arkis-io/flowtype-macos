@@ -4,13 +4,26 @@ Last verified: 2026-09-04 (Asia/Bangkok)
 
 ## Current state
 
-Branch `claude/prime-3ea1f3` (worktree, not merged, not pushed) carries three post-0.8 hardening commits on top of `main` at `adb12a0`:
+Post-0.8 hardening is merged to `main` and pushed to `origin/main`. On top of `adb12a0`:
 
 1. `test: compile every source file into the direct test suite` — `scripts/test-direct.sh` now globs `Sources/FlowType/*.swift` (minus the `@main` entry point) with `-warnings-as-errors` and the app's framework list, so `AppCoordinator`, `AppDelegate`, and the window controllers are compiled under test and a new file cannot escape the suite by omission.
 2. `feat: surface provider cost before cloud retries` — new `RetryCostNotice.swift`; Retry Last shows the paid providers in its menu title/tooltip (no modal, to preserve the paste target), History asks for confirmation before a paid retry. Local-only setups see no change.
 3. `docs: correct the swift test diagnosis and describe the retry cost notice`.
+4. `docs: record toolchain finding and hardening branch in handoff`.
+5. `refactor: rename main.swift so SwiftPM can build the app` — `Sources/FlowType/main.swift` is now `FlowTypeMain.swift`; SwiftPM treats a file named `main.swift` as top-level script code, where `@main` is illegal.
 
-The `swift test` diagnosis in the previous handoff was wrong. See "Toolchain finding" below; the repair needs the Mac owner's password.
+The Mac owner reinstalled the Command Line Tools on 2026-09-04. `swift package describe` and `swift build` now succeed with `Package.swift` untouched, which confirms the diagnosis below. `swift test` still cannot run on this Mac; see "Toolchain finding".
+
+The universal DMG was rebuilt from `main` at `3376d83` (all hardening commits except the rename, which changes no behavior):
+
+```text
+dist/FlowType-0.8.0-macos-universal.dmg  7,153,487 bytes  2026-09-04 01:13
+DMG SHA-256:        2997bd2bcae9e870352b9ff3953d922b7b607ea9270ef2339e52bc998cef574c
+Executable SHA-256: c120018b88eb86a042221554514fd1e5589e5b80d7c637cb3f8f010db4444e35
+Architectures:      x86_64 arm64 (app and bundled whisper-cli)
+```
+
+The app installed in `/Applications` is still the 2026-09-01 build (`4426d380…`). Both carry version `0.8.0` build `13`; bump `CFBundleVersion` to `14` before publishing so the two are distinguishable.
 
 FlowType 0.8 is implemented as one source release: improved microphone routing/capture, stronger local transcription safeguards, three-day recording recovery and retranscription, and the brand-aligned transient capsule.
 
@@ -145,7 +158,12 @@ Repair (needs the Mac owner; not run by an agent):
 sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install
 ```
 
-Then verify with `swift package describe` in the repository root. After that, `swift test` will still fail to compile the XCTest target until either Xcode is installed or the two XCTest files are migrated to Swift Testing. That choice was offered to the owner (A: stay CLT-only and migrate to Swift Testing; B: install Xcode) and is not yet decided. `scripts/test-direct.sh` remains the authoritative suite in the meantime.
+Done 2026-09-04; `swift package describe` and `swift build` succeed. The remaining blocker for `swift test` is framework availability, verified in a scratch copy:
+
+- XCTest: `no such module 'XCTest'` — the Command Line Tools do not ship it.
+- Swift Testing: `Testing.framework` exists under `/Library/Developer/CommandLineTools/Library/Developer/Frameworks`, but SwiftPM reports `no such module 'Testing'` (also with `--enable-swift-testing`), and a direct `swiftc -F` compile fails with `plugin for module 'TestingMacros' not found`. Migrating the tests to Swift Testing therefore does not help on a Command Line Tools-only Mac.
+
+Decision: stay Command Line Tools-only. `scripts/test-direct.sh` is the authoritative suite; it compiles every source file. `swift test` works only after installing Xcode, at which point the existing XCTest files run unchanged.
 
 ## Verification evidence for the hardening branch
 
@@ -153,7 +171,10 @@ Then verify with `swift package describe` in the repository root. After that, `s
 - `./scripts/build-app.sh` (native arm64) passed with warnings treated as errors after the `AppDelegate` change; it rebuilt whisper.cpp and fetched the Silero model into the worktree's ignored `.build/`.
 - `nm` on the direct test binary confirms `AppCoordinator` symbols are now compiled under test.
 - `git diff --check` passed before each commit.
-- Not verified: the Retry Last menu title and the History confirmation dialog have not been exercised in the running app. The universal build and DMG were not rebuilt on this branch.
+- `./scripts/package-release.sh` passed from `main` at `3376d83`: 121 direct checks, fresh universal whisper.cpp, warnings-as-errors universal app build, deep strict signature, plist lint, DMG creation, checksum round-trip. The shipped executable contains `RetryCostNotice` symbols.
+- The first packaging attempt failed because `.build/vendor/whisper-build-*` held CMake caches generated when the project lived at `apps/transcribe/`; those two directories were deleted and regenerated. The whisper.cpp source checkout and Silero model were kept.
+- After the rename: `./scripts/test-direct.sh`, `./scripts/build-app.sh` (arm64), and `swift build` all pass; `git diff --check` clean.
+- Not verified: the Retry Last menu title and the History confirmation dialog have not been exercised in the running app.
 
 ## Manual checks still required
 
@@ -221,8 +242,7 @@ At handoff completion, all source-release changes above are committed and pushed
 
 ## Next action
 
-1. Owner: reinstall the Command Line Tools with the command above and confirm `swift package describe` succeeds; decide A (Swift Testing, CLT-only) or B (install Xcode).
-2. Review and merge `claude/prime-3ea1f3` into `main`, then rebuild the universal app and DMG so they include the retry cost notice.
-3. Add to the manual matrix: with a cloud transcription or cleanup provider selected, confirm the Retry Last menu title shows the provider, its tooltip shows the full sentence, and Retranscribe in History shows the confirmation dialog; with local-only settings confirm neither appears.
+1. Bump `CFBundleVersion` to `14`, rebuild the DMG, and install it over `/Applications/FlowType.app` with a backup, as in the earlier release steps.
+2. Add to the manual matrix: with a cloud transcription or cleanup provider selected, confirm the Retry Last menu title shows the provider, its tooltip shows the full sentence, and Retranscribe in History shows the confirmation dialog; with local-only settings confirm neither appears.
 
 Run the remaining physical manual matrix above against the installed app. Before any public release, rebuild and re-verify the universal DMG so it includes the final brand pass; publication remains a separate approval boundary.
