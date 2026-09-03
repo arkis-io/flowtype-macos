@@ -14,9 +14,9 @@ ARCHITECTURE=$(/usr/bin/uname -m)
 
 mkdir -p "$PROJECT_DIR/.build/direct"
 
-# main.swift declares @main; Tests/ManualTests/main.swift supplies the test entry point.
+# FlowTypeMain.swift declares @main; Tests/ManualTests/main.swift supplies the test entry point.
 APP_SOURCES=("$PROJECT_DIR"/Sources/FlowType/*.swift)
-APP_SOURCES=(${APP_SOURCES:#*/Sources/FlowType/main.swift})
+APP_SOURCES=(${APP_SOURCES:#*/Sources/FlowType/FlowTypeMain.swift})
 
 /usr/bin/xcrun swiftc \
     -swift-version 5 \

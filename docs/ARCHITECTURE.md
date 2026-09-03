@@ -83,7 +83,7 @@ The final filename is never replaced before verification. App replacement and mo
 
 ## Application lifecycle
 
-`main.swift` creates `NSApplication`, attaches `AppDelegate`, and runs the event loop.
+`FlowTypeMain.swift` creates `NSApplication`, attaches `AppDelegate`, and runs the event loop. It is deliberately not named `main.swift`: SwiftPM treats a file with that name as top-level script code, where the `@main` attribute is illegal, so the old name made `swift build` fail.
 
 `AppDelegate` owns application-level concerns:
 
