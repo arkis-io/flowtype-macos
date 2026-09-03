@@ -1,8 +1,16 @@
 # FlowType Handoff
 
-Last verified: 2026-09-01 (Asia/Bangkok)
+Last verified: 2026-09-04 (Asia/Bangkok)
 
 ## Current state
+
+Branch `claude/prime-3ea1f3` (worktree, not merged, not pushed) carries three post-0.8 hardening commits on top of `main` at `adb12a0`:
+
+1. `test: compile every source file into the direct test suite` — `scripts/test-direct.sh` now globs `Sources/FlowType/*.swift` (minus the `@main` entry point) with `-warnings-as-errors` and the app's framework list, so `AppCoordinator`, `AppDelegate`, and the window controllers are compiled under test and a new file cannot escape the suite by omission.
+2. `feat: surface provider cost before cloud retries` — new `RetryCostNotice.swift`; Retry Last shows the paid providers in its menu title/tooltip (no modal, to preserve the paste target), History asks for confirmation before a paid retry. Local-only setups see no change.
+3. `docs: correct the swift test diagnosis and describe the retry cost notice`.
+
+The `swift test` diagnosis in the previous handoff was wrong. See "Toolchain finding" below; the repair needs the Mac owner's password.
 
 FlowType 0.8 is implemented as one source release: improved microphone routing/capture, stronger local transcription safeguards, three-day recording recovery and retranscription, and the brand-aligned transient capsule.
 
@@ -115,10 +123,37 @@ Passed during this implementation:
 - Deep strict ad-hoc signature validation and plist lint passed for `dist/FlowType.app`.
 - An isolated native preview rendered the branded recording, processing, success, error, intermediate-orb, and collapse states against real desktop content. The final surfaces had one continuous navy silhouette, logo-derived three-ribbon motion, readable pearl text, and no window border or rectangular panel shadow.
 - The redesigned app was installed with a recoverable backup, relaunched, and its running `/Applications` executable hash was matched exactly to `dist/FlowType.app`.
-- `swift test` remains unavailable because this machine's Swift package API rejects the existing `swiftLanguageModes: [.v5]` manifest declaration; the project-owned direct suite and actual warnings-as-errors app compiler passed.
+- `swift test` remains unavailable. The earlier claim that the manifest's `swiftLanguageModes: [.v5]` was rejected is incorrect; see "Toolchain finding". The project-owned direct suite and the warnings-as-errors app compiler passed.
 - Final source diff hygiene (`git diff --check`) passed.
 
 The CMake whisper build emitted only its upstream deprecation warning about compatibility below CMake 3.10; the build completed successfully.
+
+## Toolchain finding (2026-09-04)
+
+Reproduced with a scratch copy of the package and three manifest variants (`swiftLanguageModes`, `swiftLanguageVersions`, and no language-mode line with tools-version 5.9). All three fail identically at **link** time:
+
+```text
+Undefined symbols for architecture arm64:
+  PackageDescription.Package.__allocating_init(name:defaultLocalization:platforms:...swiftLanguageVersions:...)
+```
+
+Cause: `/Library/Developer/CommandLineTools/usr/lib/swift/pm/ManifestAPI/PackageDescription.swiftmodule` is dated Jul 12 while `libPackageDescription.dylib` beside it is dated Jun 9. The compiler checks the manifest against the newer interface; the linker binds against the older library, which lacks the symbol. No `Package.swift` edit can fix this. `pkgutil --pkg-info=com.apple.pkg.CLTools_Executables` reports 26.6.0; there is no Xcode.app on the machine, and the Command Line Tools ship `Testing.framework` but no XCTest.
+
+Repair (needs the Mac owner; not run by an agent):
+
+```bash
+sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install
+```
+
+Then verify with `swift package describe` in the repository root. After that, `swift test` will still fail to compile the XCTest target until either Xcode is installed or the two XCTest files are migrated to Swift Testing. That choice was offered to the owner (A: stay CLT-only and migrate to Swift Testing; B: install Xcode) and is not yet decided. `scripts/test-direct.sh` remains the authoritative suite in the meantime.
+
+## Verification evidence for the hardening branch
+
+- `./scripts/test-direct.sh` passed after each commit, including the eight new `RetryCostNotice` checks (local-only no notice, local cleanup endpoint no notice, cloud transcription/cleanup provider naming, audio/transcript wording, de-duplicated provider, pipeline order, message prefix).
+- `./scripts/build-app.sh` (native arm64) passed with warnings treated as errors after the `AppDelegate` change; it rebuilt whisper.cpp and fetched the Silero model into the worktree's ignored `.build/`.
+- `nm` on the direct test binary confirms `AppCoordinator` symbols are now compiled under test.
+- `git diff --check` passed before each commit.
+- Not verified: the Retry Last menu title and the History confirmation dialog have not been exercised in the running app. The universal build and DMG were not rebuilt on this branch.
 
 ## Manual checks still required
 
@@ -185,5 +220,9 @@ At handoff completion, all source-release changes above are committed and pushed
 - Ad-hoc builds are not notarized and may require macOS privacy grants again after replacement.
 
 ## Next action
+
+1. Owner: reinstall the Command Line Tools with the command above and confirm `swift package describe` succeeds; decide A (Swift Testing, CLT-only) or B (install Xcode).
+2. Review and merge `claude/prime-3ea1f3` into `main`, then rebuild the universal app and DMG so they include the retry cost notice.
+3. Add to the manual matrix: with a cloud transcription or cleanup provider selected, confirm the Retry Last menu title shows the provider, its tooltip shows the full sentence, and Retranscribe in History shows the confirmation dialog; with local-only settings confirm neither appears.
 
 Run the remaining physical manual matrix above against the installed app. Before any public release, rebuild and re-verify the universal DMG so it includes the final brand pass; publication remains a separate approval boundary.
