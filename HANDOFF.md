@@ -14,16 +14,18 @@ Post-0.8 hardening is merged to `main` and pushed to `origin/main`. On top of `a
 
 The Mac owner reinstalled the Command Line Tools on 2026-09-04. `swift package describe` and `swift build` now succeed with `Package.swift` untouched, which confirms the diagnosis below. `swift test` still cannot run on this Mac; see "Toolchain finding".
 
-The universal DMG was rebuilt from `main` at `3376d83` (all hardening commits except the rename, which changes no behavior):
+6. `chore: bump build number to 14`.
+
+The release candidate is the universal DMG rebuilt from `main` at `2054064` (version `0.8.0`, build `14`):
 
 ```text
-dist/FlowType-0.8.0-macos-universal.dmg  7,153,487 bytes  2026-09-04 01:13
-DMG SHA-256:        2997bd2bcae9e870352b9ff3953d922b7b607ea9270ef2339e52bc998cef574c
-Executable SHA-256: c120018b88eb86a042221554514fd1e5589e5b80d7c637cb3f8f010db4444e35
+dist/FlowType-0.8.0-macos-universal.dmg  7,153,264 bytes  2026-09-04 11:40
+DMG SHA-256:        8c06ef27f85a12592845673e6a40119c6250615b04e260585de6e526849b1d75
+Executable SHA-256: 65b83ac751eeb80812d557a18c0677f3922f6c1304890d1ea31f6cc2ab979a40
 Architectures:      x86_64 arm64 (app and bundled whisper-cli)
 ```
 
-The app installed in `/Applications` is still the 2026-09-01 build (`4426d380…`). Both carry version `0.8.0` build `13`; bump `CFBundleVersion` to `14` before publishing so the two are distinguishable.
+The app installed in `/Applications` is still the 2026-09-01 build `13` (`4426d380…`); it has not been replaced with build 14. No GitHub release or tag exists. The repository is private as of this handoff; the owner has approved making it public, and a full-history scan for key patterns and credential-named files found nothing.
 
 FlowType 0.8 is implemented as one source release: improved microphone routing/capture, stronger local transcription safeguards, three-day recording recovery and retranscription, and the brand-aligned transient capsule.
 
@@ -234,7 +236,7 @@ At handoff completion, all source-release changes above are committed and pushed
 
 ## Important boundaries
 
-- The app version is now `0.8.0` build `13`. No new package dependency, database, account, cloud sync, search, export, bulk History UI, interactive pill control, tracker mutation, deployment, or publication was added.
+- The app version is now `0.8.0` build `14`. No new package dependency, database, account, cloud sync, search, export, bulk History UI, interactive pill control, tracker mutation, deployment, or publication was added.
 - The three-day list is recovery, not an indefinite transcript archive.
 - The current DMG predates the brand-aligned capsule. The installed app and `dist/FlowType.app` are current, but a distributable DMG must be rebuilt before any release.
 - Building and isolated previewing do not prove the global shortcut, target-app paste, audible tone, perceived animation quality during a real capture, History focus behavior, or Intel runtime.
@@ -242,7 +244,8 @@ At handoff completion, all source-release changes above are committed and pushed
 
 ## Next action
 
-1. Bump `CFBundleVersion` to `14`, rebuild the DMG, and install it over `/Applications/FlowType.app` with a backup, as in the earlier release steps.
-2. Add to the manual matrix: with a cloud transcription or cleanup provider selected, confirm the Retry Last menu title shows the provider, its tooltip shows the full sentence, and Retranscribe in History shows the confirmation dialog; with local-only settings confirm neither appears.
+1. Install the build-14 `dist/FlowType.app` over `/Applications/FlowType.app` with a backup, as in the earlier release steps, and run the manual matrix on it.
+2. Make the repository public, then tag `v0.8.0` at `2054064` and create a draft GitHub Release with the DMG and `.sha256` per `docs/RELEASING.md` step 7; publish only after review.
+3. Add to the manual matrix: with a cloud transcription or cleanup provider selected, confirm the Retry Last menu title shows the provider, its tooltip shows the full sentence, and Retranscribe in History shows the confirmation dialog; with local-only settings confirm neither appears.
 
 Run the remaining physical manual matrix above against the installed app. Before any public release, rebuild and re-verify the universal DMG so it includes the final brand pass; publication remains a separate approval boundary.
