@@ -50,7 +50,7 @@ FlowType requires macOS 13 or newer. The universal release supports both outputs
 
 ### 2. Download FlowType
 
-Open the [latest FlowType release](https://github.com/jdlinventures/flowtype-macos/releases/latest) and download both files:
+Open the [latest FlowType release](https://github.com/arkis-io/flowtype-macos/releases/latest) and download both files:
 
 ```text
 FlowType-VERSION-macos-universal.dmg
@@ -241,7 +241,7 @@ Stop. Re-download the DMG from the project release page and verify its checksum.
 Use this if no packaged release exists or the friend wants to audit and compile the source. The repository must first be public, or the friend must have been granted private access.
 
 ```bash
-git clone https://github.com/jdlinventures/flowtype-macos.git
+git clone https://github.com/arkis-io/flowtype-macos.git
 cd flowtype-macos
 brew install cmake
 ./scripts/test-direct.sh

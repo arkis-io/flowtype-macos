@@ -52,7 +52,7 @@ Stop if:
 
 - the worktree contains unrelated changes;
 - `main` is not synchronized with the intended release commit;
-- the repository identity is not `jdlinventures/flowtype-macos`;
+- the repository identity is not `arkis-io/flowtype-macos`;
 - a release with the proposed tag already exists;
 - visibility or publication has not been approved.
 
@@ -206,7 +206,7 @@ gh release view "$TAG" --json tagName,name,isDraft,isPrerelease,url,assets
 curl --fail --location \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2026-03-10" \
-  "https://api.github.com/repos/jdlinventures/flowtype-macos/releases/latest"
+  "https://api.github.com/repos/arkis-io/flowtype-macos/releases/latest"
 ```
 
 Confirm:

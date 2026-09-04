@@ -253,14 +253,14 @@ do {
       "tag_name": "v0.7.0",
       "name": "FlowType 0.7.0",
       "body": "A safer update.",
-      "html_url": "https://github.com/jdlinventures/flowtype-macos/releases/tag/v0.7.0"
+      "html_url": "https://github.com/arkis-io/flowtype-macos/releases/tag/v0.7.0"
     }
     """.utf8)
     let release = FlowTypeRelease(
         version: "0.7.0",
         title: "FlowType 0.7.0",
         notes: "A safer update.",
-        webpageURL: URL(string: "https://github.com/jdlinventures/flowtype-macos/releases/tag/v0.7.0")!
+        webpageURL: URL(string: "https://github.com/arkis-io/flowtype-macos/releases/tag/v0.7.0")!
     )
     expect(
         try? ReleaseUpdateChecker.outcome(from: availableJSON, currentVersion: ReleaseVersion("0.6.0")!),

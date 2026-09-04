@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jdlinventures/flowtype-macos/releases/latest"><img src="https://img.shields.io/github/v/release/jdlinventures/flowtype-macos?label=download&color=2ea44f" alt="Latest release"></a>
-  <a href="https://github.com/jdlinventures/flowtype-macos/releases"><img src="https://img.shields.io/github/downloads/jdlinventures/flowtype-macos/total?color=blue" alt="Downloads"></a>
+  <a href="https://github.com/arkis-io/flowtype-macos/releases/latest"><img src="https://img.shields.io/github/v/release/arkis-io/flowtype-macos?label=download&color=2ea44f" alt="Latest release"></a>
+  <a href="https://github.com/arkis-io/flowtype-macos/releases"><img src="https://img.shields.io/github/downloads/arkis-io/flowtype-macos/total?color=blue" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-black?logo=apple" alt="macOS 13+">
   <img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-lightgrey" alt="Universal build">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT license"></a>
@@ -27,7 +27,7 @@ Press a key, say what you want to write, and the words appear wherever your curs
 
 ## Install (5 steps)
 
-1. **Download** the `.dmg` from the [latest release](https://github.com/jdlinventures/flowtype-macos/releases/latest).
+1. **Download** the `.dmg` from the [latest release](https://github.com/arkis-io/flowtype-macos/releases/latest).
 2. **Open the DMG** and drag **FlowType** onto the **Applications** folder.
 3. **Open FlowType** from Applications. When macOS blocks it, use the **Open Anyway** fix in the yellow box above.
 4. **Allow three permissions** when asked: **Microphone** (to hear you), **Input Monitoring** (to notice your shortcut key), **Accessibility** (to paste the text for you). FlowType walks you through each one.
@@ -63,7 +63,7 @@ you talk  →  FlowType records  →  Whisper turns speech into text  →  text 
 
 FlowType is a native macOS app written in **Swift** with Apple's AppKit, and it has **zero third-party Swift dependencies**. The only bundled outside code is whisper.cpp, compiled from a pinned source commit so every release is reproducible. There is no account system, no analytics, no telemetry, and no database; your recordings and settings are plain files in your own Library folder that you can inspect or delete any time.
 
-It is a personal project shared as-is under the MIT license. Bug reports and pull requests are welcome in [Issues](https://github.com/jdlinventures/flowtype-macos/issues).
+FlowType is an open-source project from [Arkis](https://github.com/arkis-io), shared as-is under the MIT license. Bug reports and pull requests are welcome in [Issues](https://github.com/arkis-io/flowtype-macos/issues).
 
 ## Privacy in four lines
 
@@ -136,7 +136,7 @@ Finalized audio and versioned metadata live under Application Support for three 
 
 ### Option A: packaged release
 
-Download the DMG and matching `.sha256` file from the [latest FlowType release](https://github.com/jdlinventures/flowtype-macos/releases/latest). Verify the checksum, open the DMG, and drag FlowType onto the Applications shortcut.
+Download the DMG and matching `.sha256` file from the [latest FlowType release](https://github.com/arkis-io/flowtype-macos/releases/latest). Verify the checksum, open the DMG, and drag FlowType onto the Applications shortcut.
 
 Because the app is not notarized, first launch requires the one-time **Open Anyway** flow under **System Settings → Privacy & Security**. Then choose Medium English (recommended, 1.53 GB) or Small English (faster, 488 MB) and select **Install** in FlowType Settings. FlowType verifies the model and keeps it for future app updates. Follow [INSTALL_FOR_FRIENDS.md](docs/INSTALL_FOR_FRIENDS.md) for the exact safe steps, permission setup, and a real dictation test.
 
