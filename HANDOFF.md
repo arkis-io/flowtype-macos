@@ -25,7 +25,7 @@ Executable SHA-256: 65b83ac751eeb80812d557a18c0677f3922f6c1304890d1ea31f6cc2ab97
 Architectures:      x86_64 arm64 (app and bundled whisper-cli)
 ```
 
-The app installed in `/Applications` is still the 2026-09-01 build `13` (`4426d380…`); it has not been replaced with build 14. The owner made the repository public on 2026-09-04 after a full-history scan for key patterns and credential-named files found nothing. A **draft** GitHub Release `v0.8.0` targeting `2054064` exists with the DMG and `.sha256` attached and hand-written notes: <https://github.com/jdlinventures/flowtype-macos/releases>. Drafts are invisible to friends and to the in-app update checker; publishing is a separate approval.
+The app installed in `/Applications` is still the 2026-09-01 build `13` (`4426d380…`); it has not been replaced with build 14. The owner made the repository public on 2026-09-04 after a full-history scan for key patterns and credential-named files found nothing. The owner installed build 14 over `/Applications`, tested it, and approved publication. GitHub Release `v0.8.0` was **published on 2026-09-04** at tag `2054064` with the DMG and `.sha256` attached and hand-written notes: <https://github.com/jdlinventures/flowtype-macos/releases/tag/v0.8.0>. The unauthenticated latest-release API now returns it, which is what the in-app update checker reads.
 
 FlowType 0.8 is implemented as one source release: improved microphone routing/capture, stronger local transcription safeguards, three-day recording recovery and retranscription, and the brand-aligned transient capsule.
 
@@ -244,8 +244,7 @@ At handoff completion, all source-release changes above are committed and pushed
 
 ## Next action
 
-1. Install the build-14 `dist/FlowType.app` over `/Applications/FlowType.app` with a backup, as in the earlier release steps, and run the manual matrix on it.
-2. Review the draft release notes and assets, then publish it (creates tag `v0.8.0` at `2054064`). After publishing, download from a clean browser and verify the checksum, per `docs/RELEASING.md` step 8.
-3. Add to the manual matrix: with a cloud transcription or cleanup provider selected, confirm the Retry Last menu title shows the provider, its tooltip shows the full sentence, and Retranscribe in History shows the confirmation dialog; with local-only settings confirm neither appears.
+1. Share <https://github.com/jdlinventures/flowtype-macos/releases/latest> with friends; point them at the install guide for the Gatekeeper and permissions steps.
+2. Add to the manual matrix for the next release: with a cloud transcription or cleanup provider selected, confirm the Retry Last menu title shows the provider, its tooltip shows the full sentence, and Retranscribe in History shows the confirmation dialog; with local-only settings confirm neither appears.
 
 Run the remaining physical manual matrix above against the installed app. Before any public release, rebuild and re-verify the universal DMG so it includes the final brand pass; publication remains a separate approval boundary.
