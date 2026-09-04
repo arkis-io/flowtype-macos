@@ -1,10 +1,83 @@
-# FlowType
+<p align="center">
+  <img src="docs/assets/flowtype-logo.png" alt="FlowType logo" width="128">
+</p>
 
-FlowType is a local-first, system-wide AI dictation app for macOS. Tap its global hotkey for hands-free dictation or hold the same key for push to talk; the finished text is pasted at the cursor in the app you were already using.
+<h1 align="center">FlowType</h1>
 
-It is a native Swift/AppKit menu-bar app with no account system, analytics, telemetry, database, or third-party Swift dependencies.
+<p align="center">
+  <strong>Talk instead of type. Anywhere on your Mac. Nothing leaves your computer.</strong>
+</p>
 
-## What works
+<p align="center">
+  <a href="https://github.com/jdlinventures/flowtype-macos/releases/latest"><img src="https://img.shields.io/github/v/release/jdlinventures/flowtype-macos?label=download&color=2ea44f" alt="Latest release"></a>
+  <a href="https://github.com/jdlinventures/flowtype-macos/releases"><img src="https://img.shields.io/github/downloads/jdlinventures/flowtype-macos/total?color=blue" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-black?logo=apple" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-lightgrey" alt="Universal build">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT license"></a>
+</p>
+
+Press a key, say what you want to write, and the words appear wherever your cursor is: Slack, Notes, Gmail, your code editor, anything. Speech recognition runs **on your Mac** with an open-source model, so it is free to use and your voice is never uploaded.
+
+> [!WARNING]
+> **macOS will say "Apple could not verify FlowType is free of malware."** That is expected. FlowType is a free community app with no paid Apple developer certificate, so macOS shows this for every download.
+>
+> **The fix takes 10 seconds:** open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the FlowType message. Then open FlowType again.
+>
+> Do **not** turn off Gatekeeper or run any "disable security" command someone suggests online. You only need to approve this one app.
+
+## Install (5 steps)
+
+1. **Download** the `.dmg` from the [latest release](https://github.com/jdlinventures/flowtype-macos/releases/latest).
+2. **Open the DMG** and drag **FlowType** onto the **Applications** folder.
+3. **Open FlowType** from Applications. When macOS blocks it, use the **Open Anyway** fix in the yellow box above.
+4. **Allow three permissions** when asked: **Microphone** (to hear you), **Input Monitoring** (to notice your shortcut key), **Accessibility** (to paste the text for you). FlowType walks you through each one.
+5. **Pick a speech model** in the Settings window and click **Install**. *Medium English* (1.5 GB) is the most accurate; *Small English* (0.5 GB) downloads faster. This is a one-time download.
+
+That's it. FlowType lives in your menu bar as a small waveform icon. Stuck? The [friend-proof install guide](docs/INSTALL_FOR_FRIENDS.md) covers every error message we know about.
+
+## How to use it
+
+| You do this | FlowType does this |
+| --- | --- |
+| **Hold Right Option** and talk, then let go | Types what you said |
+| **Tap Right Option** once, talk, tap again | Same thing, hands-free (for longer dictations) |
+| Press **Esc** while recording | Cancels, nothing is typed |
+| Menu bar → **Retry Last Transcription** | Runs the last recording again (handy if it came out wrong) |
+| Menu bar → **Recording History…** | See, replay, copy, or delete the last three days of recordings |
+
+A small pill appears at the bottom of the screen while you talk and disappears when it's done. You can change the shortcut key, the microphone, and everything else in **Settings**.
+
+## How it works (the short version)
+
+```text
+you talk  →  FlowType records  →  Whisper turns speech into text  →  text is pasted at your cursor
+                                   (runs on your Mac, free)
+```
+
+- **The speech-to-text model is [Whisper](https://github.com/openai/whisper)**, an open-source model released by OpenAI. FlowType runs it locally using [whisper.cpp](https://github.com/ggml-org/whisper.cpp), a fast C++ version, on either the *medium.en* or *small.en* English model you choose at setup.
+- **A tiny second model, [Silero VAD](https://github.com/snakers4/silero-vad)**, checks whether you actually spoke, so silence or background noise doesn't turn into made-up words.
+- **Optional cleanup**: if you want, an AI model can tidy the text (remove "um", fix punctuation). This is off unless you add your own API key, because it sends the text to a cloud service.
+- **Optional cloud transcription**: you can point FlowType at OpenAI or Groq instead of the local model. Same deal: your key, your bill, your choice. By default nothing is sent anywhere.
+
+## How it was built
+
+FlowType is a native macOS app written in **Swift** with Apple's AppKit, and it has **zero third-party Swift dependencies**. The only bundled outside code is whisper.cpp, compiled from a pinned source commit so every release is reproducible. There is no account system, no analytics, no telemetry, and no database; your recordings and settings are plain files in your own Library folder that you can inspect or delete any time.
+
+It is a personal project shared as-is under the MIT license. Bug reports and pull requests are welcome in [Issues](https://github.com/jdlinventures/flowtype-macos/issues).
+
+## Privacy in four lines
+
+- Your voice is processed on your Mac. It is never uploaded unless **you** turn on a cloud provider.
+- Recordings are kept for **three days** so you can retry a bad transcription, then deleted automatically.
+- FlowType has no account, no tracking, and no analytics of any kind.
+- The only network request it makes on its own is a once-a-day check of this GitHub page for a new version, and it never installs anything without you.
+
+---
+
+<details>
+<summary><h2>Full reference (for the curious and for developers)</h2></summary>
+
+## Everything it can do
 
 - Use one hybrid shortcut: tap once for hands-free recording or hold for push to talk.
 - Optionally turn hybrid behavior off and assign a separate hands-free shortcut.
@@ -63,7 +136,7 @@ Finalized audio and versioned metadata live under Application Support for three 
 
 ### Option A: packaged release
 
-After the first public release exists, download the DMG and matching `.sha256` file from the [latest FlowType release](https://github.com/jdlinventures/flowtype-macos/releases/latest). Verify the checksum, open the DMG, and drag FlowType onto the Applications shortcut.
+Download the DMG and matching `.sha256` file from the [latest FlowType release](https://github.com/jdlinventures/flowtype-macos/releases/latest). Verify the checksum, open the DMG, and drag FlowType onto the Applications shortcut.
 
 Because the app is not notarized, first launch requires the one-time **Open Anyway** flow under **System Settings → Privacy & Security**. Then choose Medium English (recommended, 1.53 GB) or Small English (faster, 488 MB) and select **Install** in FlowType Settings. FlowType verifies the model and keeps it for future app updates. Follow [INSTALL_FOR_FRIENDS.md](docs/INSTALL_FOR_FRIENDS.md) for the exact safe steps, permission setup, and a real dictation test.
 
@@ -411,3 +484,5 @@ The direct test script uses Apple's compiler and frameworks without SwiftPM and 
 ## License
 
 FlowType is released under the permissive [MIT License](LICENSE). You may use, copy, modify, merge, publish, distribute, sublicense, or sell copies subject to the license notice and warranty disclaimer. Bundled local-transcription components and their exact versions are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+</details>
